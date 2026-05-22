@@ -1,0 +1,110 @@
+FlowMind monorepo. One pass, three things: (A) FIX the dead "New Session" button, (B) re-layout the Welcome/Home page, (C) add Live Research (web answers WITH sources) to both Copilot and Insight modes. Modify existing code, do not rebuild. Do not alter the copilot session flow beyond the additive research button/panel. Stay in existing patterns (OpenAPI-first, codegen once at end, Drizzle, Express 5, shadcn/ui, wouter, TanStack Query, framer-motion). Owner-scope all data to req.user.id. App has NO speaker diarization — never reintroduce speaker labels.
+
+FIRST: print which files you'll touch, ask the user for TAVILY_API_KEY and store in Replit Secrets, then execute.
+
+=== §1 FIX "NEW SESSION" / "START SESSION" DOES NOTHING (TOP PRIORITY) ===
+Clicking New Session / Start Session on welcome.tsx (and verify dashboard.tsx) does nothing — no navigation, no new session. Diagnose and fix end-to-end:
+- Inspect the button. Common causes: a framer-motion wrapper (motion.div with whileHover/whileTap) or an absolutely-positioned overlay/hero visual sits ON TOP of the <Link> and swallows the click (pointer-events); OR the <Link href="/session/new"> is fine but the /session/new page mounts and createSession mutation fails silently (check network + onError); OR a localStorage.setItem (fm_has_seen_welcome) throws and aborts the handler before navigation; OR an onClick calls preventDefault without navigating.
+- Fixes to apply as needed:
+  · Ensure the clickable element is actually on top: add pointer-events-none to decorative/animated overlays, pointer-events-auto + a higher z-index to the CTA.
+  · Wrap any localStorage writes in try/catch so they can never block navigation; navigate FIRST, persist after.
+  · Make navigation robust: use wouter's useLocation/setLocation in the onClick OR a plain <Link href="/session/new"> — verify it resolves inside AuthGate (the route must exist and not redirect-loop).
+  · On /session/new, surface createSession errors (toast) instead of failing silently; ensure the create mutation actually fires and on success routes to /session/:id.
+- Verify BOTH the welcome hero CTA and the sidebar "New Session" button work, plus the dashboard "Start New Session" button.
+Acceptance: clicking any New/Start Session control navigates to /session/new and lets the user start a session; errors are visible, never silent.
+
+=== §2 WELCOME / HOME PAGE RE-LAYOUT (pages/welcome.tsx) ===
+Rework layout, vertically stacked, generous spacing:
+
+TOP — Hero (bigger, centered or left-aligned, max-w-3xl):
+- Badge "You're set up — let's go" (keep).
+- h1 MUCH larger: text-5xl md:text-6xl lg:text-7xl, tight tracking, "Hey {displayName}, welcome to FlowMind" with the name in primary accent.
+- Subline larger (text-lg md:text-xl, muted): "Your AI conversation copilot. Listen to any meeting or call and get real-time strategic help."
+- Primary CTA "New Session" (mic icon, arrow) → /session/new (MUST work per §1). Secondary ghost "Take the 60-second tour" → startTour().
+
+MIDDLE — two mode cards in a 2-col grid:
+- "Live Copilot" — "Real-time transcription with instant AI responses for objections, answers, and logic checks."
+- "Insight Mode" + Pro badge — "AI surfaces live strategic insights — opportunities, risks, connections, questions — as you talk."
+- "Replay product tour" link below the cards.
+
+BOTTOM — full-width animated "Live Session" demo (replaces the small floating card; make it the centerpiece, wider + richer):
+- Full content width (max-w-5xl), large rounded-2xl panel with header bar ("● LIVE SESSION", animated red dot).
+- Two columns desktop / stacked mobile:
+  · LEFT (transcript stream): 4–6 dialogue lines animating in sequentially on a loop (fade/slide + subtle typewriter), simulating a sales call. NO speaker labels — flowing dialogue, e.g. "I'm concerned about the pricing and the timeline for Q4…", "We're comparing you against two other vendors…". A greyed/italic live interim line at the bottom that keeps "typing".
+  · RIGHT (AI output): insight cards pop in with stagger — at least one Opportunity (green), one Risk (amber), one Question (violet), each with icon + short text (e.g. Opportunity "Pivot to ROI — anchor value before addressing the price concern."). THEN a Research card: "🔍 Searching the web…" shimmer → resolves to a short answer + 2–3 clickable-looking source chips (title + domain), showcasing the new research feature.
+- Loop the sequence (~16–20s), reset smoothly.
+- prefers-reduced-motion: static fully-populated version, no animation.
+- Pure SVG/CSS/framer-motion, no new deps, no external images. Use existing tokens; correct in light AND dark mode.
+- IMPORTANT: this animated panel must NOT overlap or sit above the CTAs/links — keep it in normal document flow below them, and ensure none of its layers capture clicks meant for buttons (pointer-events discipline per §1).
+
+Keep personalization: returning users get "Welcome back, {name}" + recent-session cards; demo panel may shrink/move below for them. First-time users get the full demo prominently.
+
+=== §3 RESEARCH PROVIDER ===
+- Add dep `@tavily/core` (or Tavily REST via fetch) to artifacts/api-server.
+- Wrap in artifacts/api-server/src/lib/research-provider.ts: `research(query:string): Promise<{answer:string, sources:{title,url,snippet}[]}>`. Tavily { search_depth:'basic', include_answer:true, max_results:5, include_raw_content:false }; map → {title,url,snippet}.
+- Env TAVILY_API_KEY server-only, never in client bundle. If missing: feature disabled, /api/config returns researchAvailable=false + devBanner "Live research not configured — set TAVILY_API_KEY."
+- All calls go through this file (swap providers later = one file).
+
+=== §4 SCHEMA ===
+lib/db/src/schema/research.ts:
+- research_results(id serial PK, session_id int, user_id int, query text, answer text, sources jsonb, trigger text 'auto'|'manual', status text default 'ok', created_at)
+Push. Reads/writes scoped to req.user.id AND verify session ownership before returning/mutating.
+
+=== §5 PLAN LIMITS ===
+plans.ts add researchRequests/month → free:0, pro:100, business:1000, admin:Infinity.
+enforceUsage: free → 402 {limitType:'feature'}; over-quota → 402 {limitType:'research', used, limit, upgradeUrl:'/pricing'}; admin skips. Quota SHARED across both modes.
+
+=== §6 ROUTES (artifacts/api-server/src/routes/research.ts, requireAuth) ===
+- POST /api/research { sessionId, query?, trigger } — if query empty, derive from latest transcript server-side. Verify session ownership. Enforce quota. Call provider. Persist. Return { id, query, answer, sources }.
+- GET /api/research?sessionId — owner-scoped list, newest first; identical for copilot + insight.
+OpenAPI tag `research`. Codegen at end. Send ONLY the derived query to the provider — never transcript dumps.
+
+=== §7 TRIGGERS ===
+Manual (BOTH modes): "🔍 Research" button in session header. Inline input prefilled with a smart guess (last meaningful sentence / detected entity), editable, POST trigger:'manual'. Also "Research this" on each Insight card (insight mode only). Debounce double-submit.
+Auto (INSIGHT mode ONLY, Pro/Business, opt-in toggle "Auto-research", default OFF): reuse per-USER insight ticker. Detect research-worthy moments in last ~600 transcript chars (capitalized multiword company/product names, numeric/stat claims, factual questions). Fire only when research-worthy AND ≥90s since last auto-research AND quota remaining AND new speech occurred (never during silence). Hard cap 1/90s/session.
+Copilot mode: manual button ONLY, no auto toggle.
+
+=== §8 FRONTEND (research UI) ===
+- components/research-card.tsx: query (mono header), answer (clean prose), "Sources" list — clickable rows/chips with favicon-style dot, title, domain, open url new tab (rel="noopener noreferrer"). Footer "via web · {timeAgo}". Loading shimmer (~1–3s). Error state "Couldn't fetch results — try again."
+- Copilot mode: Research button in header (additive only). Results in a dismissible right-side panel/slide-over appearing after first query; empty until used. Do NOT add the insight sidebar to copilot.
+- Insight mode: Research button + Auto-research switch; cards in the right panel interleaved with insights (or a dedicated "Research" tab — prefer tab if crowded).
+- Gating both modes: Pro/Business/admin → working button; Free → disabled with Lock + tooltip "Pro feature — upgrade" → /pricing.
+- Respect researchAvailable=false → hide controls, no dead buttons, tiny "Research unavailable" note.
+- Show remaining quota subtly (button tooltip "63 / 100 left this month").
+
+=== §9 SECURITY / COST GUARDS ===
+- TAVILY_API_KEY server-only; never in client bundle.
+- Per-session hard cap + per-user monthly quota enforced server-side, not just UI.
+- Only the derived query goes to the provider, never transcripts.
+- Log security_events type 'research_query' (meta: trigger, sessionId, query length only).
+
+=== §10 ACCEPTANCE ===
+- [ ] `pnpm run typecheck` passes
+- [ ] New Session works from welcome hero, sidebar, AND dashboard → navigates to /session/new and starts a session; errors visible not silent
+- [ ] No animated/decorative layer captures clicks meant for buttons
+- [ ] Welcome: hero noticeably larger; mode cards below; full-width animated Live Session demo at bottom, wider/richer, no speaker labels, in normal flow (not overlapping CTAs)
+- [ ] Demo loops: transcript lines animate in, insight cards stagger in, Research card shows searching → answer + source chips; reduced-motion static; correct light + dark
+- [ ] Returning users keep welcome-back + recent sessions
+- [ ] Copilot session: working Research button for Pro/Business, locked for Free, results in a panel WITHOUT becoming insight mode, NO auto-research toggle
+- [ ] Insight session: Research button + Auto-research toggle + "Research this" on insight cards
+- [ ] Manual research returns answer + clickable sources opening in new tab
+- [ ] Auto-research (insight, Pro+, on) fires only on research-worthy new speech, max 1/90s, never during silence
+- [ ] Quota shared across modes; over-quota → 402; Free → 402; admin unlimited
+- [ ] researchAvailable=false → controls hidden, devBanner shown
+- [ ] research_results owner-scoped; user1 cannot read user2's research
+- [ ] TAVILY_API_KEY never reaches the client bundle
+
+=== §11 DO-NOTS ===
+- Do NOT leave any New/Start Session control non-functional.
+- Do NOT let decorative/animated layers swallow button clicks (pointer-events discipline).
+- Do NOT reintroduce speaker labels (no diarization).
+- Do NOT enable research for Free; do NOT add auto-research to copilot.
+- Do NOT alter copilot flow beyond the additive Research button + panel.
+- Do NOT send full transcripts to the provider — only the derived query.
+- Do NOT hardcode Tavily calls in routes; go through research-provider.ts.
+- Do NOT block the UI thread; research is async with loading state.
+- Do NOT use external images for the demo; SVG/CSS/framer-motion only.
+- Do NOT regenerate codegen multiple times — once at the end.
+- Do NOT add deps beyond the Tavily client.
+
+Execute, then summarize: the root cause of the dead New Session button + how you fixed it, TAVILY_API_KEY status, files changed, and any ambiguous decisions.

@@ -1,0 +1,14 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "composite": true,
+    "declarationMap": true,
+    "emitDeclarationOnly": true,
+    "outDir": "dist",
+    "rootDir": "src",
+    "lib": ["dom", "es2022"],
+    "jsx": "preserve",
+    "typeRoots": ["../../node_modules/.pnpm/@types+react@19.2.14/node_modules/@types", "../../node_modules/@types"]
+  },
+  "include": ["src"]
+}

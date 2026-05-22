@@ -1,0 +1,77 @@
+FlowMind monorepo. One pass: (A) replace transcription with a HYBRID engine — Free keeps the browser Web Speech API, Pro/Business/admin use real server-side streaming STT via Deepgram (provider-abstracted), (B) fix the dead AI buttons, (C) fix the white-screen-on-navigation bug for good. Modify existing code, do not rebuild. Stay in existing patterns (OpenAPI-first, codegen once at end if spec changes, Drizzle, Express 5, shadcn/ui, wouter, TanStack Query). Owner-scope all data to req.user.id.
+
+FIRST: print which files you'll touch, ask the user for DEEPGRAM_API_KEY and store in Replit Secrets, then execute.
+
+=== §1 STT PROVIDER ABSTRACTION ===
+Create artifacts/api-server/src/lib/stt/provider.ts with an interface:
+  interface SttSession { sendAudio(chunk: Buffer): void; close(): void; }
+  interface SttProvider { open(opts: { language: string, onPartial:(t:string)=>void, onFinal:(t:string)=>void, onError:(e)=>void, onClose:()=>void }): Promise<SttSession>; }
+Implement deepgram-provider.ts using `@deepgram/sdk` live transcription (listen.live):
+  - model: best German-capable model (nova-3 multilingual, or nova-2 with language='de' — pick the one with strongest German; default language 'de', allow 'multi' for code-switching German/English business jargon).
+  - options: interim_results:true, smart_format:true, punctuate:true, endpointing tuned so natural pauses do NOT cut words (e.g. endpointing: 300–500ms), no_delay/utterance_end as supported.
+  - map Deepgram interim → onPartial, is_final → onFinal.
+  - Keep the connection alive (Deepgram KeepAlive every ~8s) so pauses never drop the stream — this directly fixes the "loses the start after a pause" problem.
+Add dep `@deepgram/sdk` to artifacts/api-server. DEEPGRAM_API_KEY server-only, never in client bundle. The active provider is selected in one place so swapping to Gladia/AssemblyAI later = one file.
+
+=== §2 SERVER WEBSOCKET STREAMING ===
+Add a WebSocket endpoint (use `ws`; ensure Replit deploy supports the upgrade — attach to the existing http server). Path: /ws/transcribe.
+- On upgrade/connect: authenticate via the fm_session cookie/JWT (reuse requireAuth logic to resolve req.user). Reject unauthenticated.
+- Plan gate: only plan ∈ {pro, business, admin} may open a Deepgram stream. Free → close immediately with a code/message {reason:'plan'} (frontend falls back to browser engine — see §3). Admin = unlimited.
+- Query/first-message includes sessionId; verify session ownership (user_id === req.user.id) else close.
+- Open an SttProvider session; pipe incoming binary audio frames → session.sendAudio; forward onPartial/onFinal back to the client as JSON messages {type:'partial'|'final', text}.
+- Persist finals via the existing transcript path (POST /api/transcripts logic or shared service) so history/notes still work — write through with user_id + sessionId.
+- Usage metering: count streamed audio seconds per user toward monthly audioMinutes quota (admin skipped). When quota hit → send {type:'limit'}, flush, close. Heartbeat/idle handling consistent with existing session lifecycle.
+- Clean teardown on client disconnect / session end: KeepAlive cleared, Deepgram connection closed, no leaked sockets.
+
+=== §3 FRONTEND HYBRID ENGINE ===
+Refactor the transcription layer in artifacts/flowmind/src so the session page picks an engine by plan:
+- lib/transcription/index.ts exposes useTranscription(sessionId) that returns { partial, finals, start, stop, engine }.
+- Free plan → existing browser Web Speech API path (keep current use-speech-recognition logic; do not delete).
+- Pro/Business/admin → new DeepgramStreamClient: getUserMedia({audio}), capture via MediaRecorder (audio/webm;codecs=opus) or AudioWorklet PCM, open WebSocket to /ws/transcribe (credentials/cookie sent), stream audio frames, render {type:'partial'} as the live interim line and append {type:'final'} to the transcript. On {type:'limit'} → stop + show upgrade/limit modal. On {reason:'plan'} → fall back to browser engine automatically.
+- Render identically regardless of engine: a continuous flowing transcript + a greyed/italic live interim line (no fragmented boxes, no speaker labels).
+- Show a small badge in the session header indicating engine quality: Free → "Basic transcription", Pro+ → "Pro transcription" (subtle, with tooltip "Powered by real-time AI speech recognition").
+- Robust errors: mic denied / unsupported / socket dropped → clear inline message + auto-reconnect attempt for the socket (with backoff), never a silent dead state.
+
+=== §4 PRICING / QUOTA REFLECTION ===
+plans.ts audioMinutes stay (free:60, pro:1500, business:7200, admin:Infinity). Free now = browser engine (no provider cost); Pro/Business = Deepgram (real cost, covered by quota). Update pricing.tsx: Pro/Business bullet "Pro real-time AI transcription (higher accuracy)", Free bullet "Standard browser transcription". enforceUsage already blocks at quota; ensure the WS path enforces the same audioMinutes limit server-side.
+
+=== §5 BUG: DEAD AI BUTTONS (DB is back online, so this is a real bug) ===
+Mid-session AI generation buttons (copilot responses / insight actions) do nothing. Debug end-to-end and fix:
+- Check the button onClick actually fires the mutation (not a no-op / missing handler).
+- Check the request reaches the server: correct route, requireAuth passes, CSRF header x-fm-csrf present on the mutation (a missing CSRF header silently 403s — common cause).
+- Check enforceUsage isn't wrongly blocking (e.g. counting wrong, or feature-gating copilot for a plan that should have it).
+- Surface ALL failures as a visible toast with the reason (402 limit / 403 csrf / 500), never silent.
+- Verify the AI response actually renders back into the transcript/assist panel after success.
+State the root cause in the final summary.
+
+=== §6 BUG: WHITE SCREEN ON PAGE NAVIGATION (fix properly this time) ===
+- Add a top-level React Error Boundary wrapping the router; on render error show a "Something went wrong — reload" card + console.error, NEVER a blank white screen.
+- Audit AuthGate: it must always resolve to exactly one terminal state {spinner | redirect-login | redirect-change-password | render children} with a settled flag — no flicker/redirect loop.
+- Inspect framer-motion AnimatePresence in App.tsx: mode="wait", stable key={location}, cap transitions ~0.25s, initial={false} where needed; ensure no route component suspends without a boundary and no query blocks navigation (set staleTime + keepPreviousData).
+- Guard every page (welcome, dashboard, session, settings, pricing, admin, history) against undefined/empty/error data with skeletons/empty states.
+Test: rapidly switch between all sidebar pages 20+ times — must never blank out or hang.
+
+=== §7 ACCEPTANCE ===
+- [ ] `pnpm run typecheck` passes
+- [ ] Free user: transcription uses browser engine (unchanged), no WS/Deepgram cost
+- [ ] Pro/Business/admin: transcription uses Deepgram via /ws/transcribe; German speech transcribes reliably; pauses do NOT drop the next sentence's start; output is continuous, not fragmented; no speaker labels
+- [ ] DEEPGRAM_API_KEY never reaches the client bundle
+- [ ] WS authenticates via cookie, gates by plan, verifies session ownership, meters audio minutes, enforces quota (closes with {type:'limit'} at cap), admin unlimited
+- [ ] Mic denial / socket drop → visible message + auto-reconnect, never silent dead state
+- [ ] Finals persist to transcripts; history + notes still work
+- [ ] Provider is swappable via one file (Gladia/AssemblyAI later)
+- [ ] Mid-session AI buttons WORK; failures show a toast with reason; root cause stated
+- [ ] No white screen on rapid navigation; error boundary catches render errors; AuthGate has no loop
+- [ ] No existing feature regressed (auth, lockout, codes, pricing, admin, retention, research, settings)
+
+=== §8 DO-NOTS ===
+- Do NOT remove the browser Web Speech API path (Free still uses it).
+- Do NOT put DEEPGRAM_API_KEY or any provider key in the client bundle.
+- Do NOT hardcode Deepgram in routes; go through the SttProvider interface.
+- Do NOT reintroduce speaker labels.
+- Do NOT let the AI buttons or any action fail silently — always surface the reason.
+- Do NOT leave AuthGate able to loop or any page able to render against undefined data.
+- Do NOT regenerate codegen multiple times — once at the end if the spec changed.
+- Do NOT add deps beyond `@deepgram/sdk` and `ws` (if not already present).
+
+Execute, then summarize: DEEPGRAM_API_KEY status, the WebSocket endpoint URL, root cause of the dead AI buttons + fix, root cause of the white-screen bug + fix, files changed, and any ambiguous decisions.

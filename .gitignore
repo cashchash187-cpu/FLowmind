@@ -1,0 +1,9 @@
+node_modules/
+.local/
+.cache/
+.pnpm-store/
+dist/
+build/
+.turbo/
+*.log
+zipFile.zip

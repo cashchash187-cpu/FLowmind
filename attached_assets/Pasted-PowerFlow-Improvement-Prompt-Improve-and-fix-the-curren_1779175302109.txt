@@ -1,0 +1,117 @@
+PowerFlow Improvement Prompt
+Improve and fix the current PowerFlow app experience.
+Several core features are not working reliably and need to be redesigned or improved.
+1. Live Transcription Quality – Major Issue
+The live transcription quality is currently not acceptable.
+Problems:
+Transcription often stops while someone is still speaking
+Short pauses cause the transcription to stop listening
+There are frequent gaps where the app misses speech entirely
+Words are often recognized incorrectly
+Overall listening reliability feels unstable
+This must be significantly improved.
+Requirements:
+Continuous real-time transcription
+No aggressive stopping during short pauses
+Better speech recognition accuracy
+Stable streaming transcription
+Low latency
+Robust handling of natural conversation flow
+Re-evaluate the current speech-to-text architecture.
+If the current provider/model is not strong enough, replace it with a better solution.
+Research and implement a more reliable approach if necessary.
+Potential improvements to evaluate:
+true streaming STT instead of segmented listening
+adaptive silence detection
+audio buffering + chunk overlap
+noise filtering
+confidence scoring
+fallback/reconnect logic if stream quality drops
+The experience should feel like the app is always listening and never randomly stopping.
+2. Speaker Recognition / Multiple People
+Current speaker handling is poor.
+The existing “2 second speaker rule” is not good and should be removed.
+Problems:
+People are not reliably separated
+Speaker changes are often wrong
+Conversation attribution feels random
+Preferred solution:
+Implement proper speaker diarization.
+If technically possible:
+detect different speakers automatically
+identify speaker changes from voice characteristics
+maintain speaker consistency throughout conversation
+support natural back-and-forth dialogue
+Do NOT rely on arbitrary timing rules.
+If reliable speaker identification is not possible with good accuracy and low latency:
+remove speaker labels entirely rather than showing incorrect information.
+Accuracy is more important than forcing this feature.
+3. Critical Bug – Conversation Gets Deleted
+There is a serious bug.
+Problem:
+When switching to the Notes page, the entire conversation history was deleted.
+This must never happen.
+Requirements:
+conversation state must persist
+navigation must not reset data
+live transcript must survive page changes
+autosave and recovery logic
+local + backend state synchronization
+protect against accidental state loss
+Conversation data should be treated as critical.
+Add safeguards and proper state management.
+Consider:
+persistent store
+session recovery
+draft autosaving
+state restoration after refresh or reconnect
+4. Default Theme
+The app currently defaults to dark mode.
+Change this.
+Requirements:
+default = Light Mode / White Mode
+clean premium appearance
+dark mode optional via settings
+remember user preference
+White mode should be the default experience.
+5. PDF Export – AI Summary Output
+Add a polished PDF export feature.
+Users should be able to export meeting/conversation results as a professional PDF.
+Add:
+Export PDF Button
+Export should generate:
+conversation summary
+key points
+action items
+decisions
+AI insights
+optional explanations
+timestamps if available
+PDF should look premium and readable.
+Design:
+clean typography
+good spacing
+branded layout
+professional document style
+mobile + web compatible
+Allow options such as:
+full transcript
+summary only
+summary + transcript
+include AI explanations toggle
+Use proper PDF generation, not screenshots.
+6. Overall Goal
+PowerFlow should feel:
+reliable
+intelligent
+always listening
+premium
+trustworthy
+Prioritize:
+transcription reliability
+data safety
+usability
+AI quality
+polished output
+Do not patch symptoms only.
+Review the architecture and improve root causes where necessary.

@@ -1,0 +1,399 @@
+FlowMind monorepo (pnpm workspaces). Apply ALL sections below in a single pass. Stay strictly inside existing patterns: OpenAPI-first (regen via `pnpm --filter @workspace/api-spec run codegen` AFTER spec edits, never edit generated output), Drizzle ORM (arrays via `.array()`), Express 5 (specific routes before /:id in routes/index.ts), shadcn/ui, wouter, TanStack Query, framer-motion, Zod v4. Node 24, TS 5.9. Do NOT add deps outside §0.
+
+Transcript source is the browser Web Speech API (no Whisper, no server STT, no speaker diarization). Server only receives finalized text chunks via POST /api/transcripts.
+
+=== §0 DEPS ===
+artifacts/api-server: bcrypt, jsonwebtoken, cookie-parser, google-auth-library, nodemailer, ua-parser-js + types
+artifacts/flowmind: driver.js@^1.3, ua-parser-js
+
+=== §1 AUTH SYSTEM ===
+Three login paths converging on the same JWT session cookie:
+(A) Username + password — 5 seeded accounts ONLY (no public signup with username/password)
+(B) Sign in with Google (OAuth ID Token verification)
+(C) Sign in with Email (6-digit magic code, 10-min expiry) — creates a NEW account if email unknown; for KNOWN emails see §1-SEC
+
+Drizzle tables in lib/db/src/schema/:
+- users(id serial PK, username text unique nullable, email text unique nullable, email_verified bool default false, password_hash text nullable, password_must_change bool default false, email_login_enabled bool default false, google_sub text unique nullable, display_name text, avatar_url text nullable, plan text default 'free', plan_expires_at timestamptz null, created_at, updated_at, last_login_at, last_login_ip text)
+  CHECK: at least one of (username & password_hash) OR (email & email_login_enabled) OR google_sub must be set.
+- auth_attempts(id, identifier text, ip, success bool, kind text 'password'|'email_code'|'google', attempted_at)
+- lockouts(id, scope text 'user'|'ip'|'email', key text, tier int default 0, locked_until timestamptz, fail_count_in_tier int default 0, UNIQUE(scope,key))
+- email_codes(id, email text, code_hash text, expires_at, attempts int default 0, used bool default false, created_at, purpose text default 'login') -- purpose: 'login'|'link_email'|'change_email'
+- activation_codes(id, code text unique, plan text, used_by_user_id null, created_at, used_at null, expires_at null)
+- security_events(id, type text, user_id null, ip, ua, meta jsonb, created_at)
+- devices(id, user_id, fp_hash text, ua_label text, first_seen, last_seen, ip_first, ua_first)
+- user_sessions(id, user_id, jwt_jti text unique, device_id null, created_at, last_seen_at, ip, ua, revoked bool default false)
+
+Seed on boot, idempotent, only if users empty. Insert 5 accounts:
+- marcel  → plan='admin',  password_must_change=true, email_login_enabled=false
+- user1..user4 → plan='free', password_must_change=true, email_login_enabled=false
+Random 16-char passwords, bcrypt-12 hash, set username + password_hash + display_name. Log ONCE:
+  ⚠️  INITIAL CREDENTIALS — SAVE NOW, NOT SHOWN AGAIN:
+  marcel : <pw>  (admin · unlimited · must change on first login)
+  user1  : <pw>  (must change on first login)
+  ...
+
+AUTH_JWT_SECRET from env; if absent generate crypto.randomBytes(48).hex and persist to /home/runner/.replit-auth-secret if writable; warn log.
+
+§1-SEC ACCOUNT-TAKEOVER HARDENING (CRITICAL — DO NOT WEAKEN)
+
+(1) Magic-code email login MUST NOT silently log into an existing password-account by email match.
+POST /api/auth/email/verify logic on match:
+  - lookup user by email
+  - if user exists AND user.email_login_enabled === false:
+      → return 403 { error: 'email_login_disabled', hint: 'This account uses password sign-in. Sign in with your password, then enable email sign-in in Account Settings if you want a backup method.' }
+  - if user exists AND user.email_login_enabled === true: issue session
+  - if user does not exist: create new user with plan='free', email_verified=true, email_login_enabled=true (this email is the primary credential for this brand-new account)
+
+(2) Google sign-in MUST NOT auto-link to an existing password-account by email match.
+POST /api/auth/google logic:
+  - verify idToken via google-auth-library against env GOOGLE_CLIENT_ID; extract sub, email, email_verified, name, picture
+  - if email_verified === false → 403 { error: 'google_email_unverified' }
+  - lookup by google_sub → if found, issue session
+  - else lookup by email:
+      - if found AND user.password_hash IS NOT NULL → 409 { error: 'account_exists_link_required', hint: 'An account with this email already exists. Sign in with your password, then link Google in Account Settings.' }
+      - if found AND user.password_hash IS NULL AND user.email_verified → set google_sub on user, issue session (this is a legacy email-only user adding Google)
+      - if found AND not email_verified → 409 same as above
+  - else: create new user (plan='free', google_sub set, email_verified=true)
+
+Linking Google to an existing password-account ONLY via authed flow: POST /api/account/link/google {idToken} — requires logged-in user, verifies idToken, refuses if google_sub already taken by another user. Same shape for unlink: POST /api/account/unlink/google — refused if it would leave the account without any auth method.
+
+(9) Forced password rotation
+- Seeded accounts have password_must_change=true.
+- /api/auth/me returns passwordMustChange flag.
+- After login, if me.passwordMustChange === true, frontend AuthGate force-redirects to /change-password regardless of intended route, and blocks all other navigation until cleared.
+- /change-password page: NO current-password required when passwordMustChange=true (since seed pw is throwaway), min 12 chars, must differ from seed indicator (we don't have the seed pw in plaintext — just check length + not same as username + not in top-100 common-passwords inline list).
+- PATCH /api/account/password — if user.password_must_change=true, accept without currentPassword; else require currentPassword. On success set password_must_change=false, insert security_events 'password_changed_forced' or 'password_changed'.
+
+Lockout durations: [60, 300, 900, 3600, 21600, 86400] seconds, saturate at last.
+On failure: upsert lockouts(scope='user'|'email', key=identifier) AND lockouts(scope='ip', key=ip); inc fail_count_in_tier; when >=3 → locked_until=now+durations[tier], tier=min(tier+1,5), fail_count_in_tier=0. Successful login resets both scopes. Login endpoints block with 429 {retry_after_seconds} if either active. DB-backed — refresh/cookie-clear cannot bypass.
+Extra IP token-bucket on /api/auth/*: 30 req/min/IP.
+
+Routes artifacts/api-server/src/routes/auth.ts:
+- POST /api/auth/login {username,password}
+- POST /api/auth/google {idToken}
+- POST /api/auth/email/request {email} (rate-limit 3/hour/email + IP bucket; reject if email in disposable list; never reveal whether email exists in response)
+- POST /api/auth/email/verify {email, code}
+- POST /api/auth/logout — revoke current jti
+- POST /api/auth/logout-all — revoke all user_sessions of req.user.id, re-issue new session for current device
+- GET /api/auth/me → { id, username, email, displayName, avatarUrl, plan, planExpiresAt, isAdmin, passwordMustChange, authMethods: {password, google, email}, currentJti }
+
+Session issuance helper: jti = crypto.randomBytes(16).hex; resolve/create device row by fp_hash; insert user_sessions(user_id, jti, device_id, ip, ua); sign JWT {uid, jti, plan, csrf} 7d exp; set httpOnly Secure(prod) SameSite=Lax cookie `fm_session`; set non-httpOnly `fm_csrf` cookie.
+
+requireAuth middleware: verify cookie, verify jti exists in user_sessions and revoked=false; update last_seen_at; attach req.user. Applied to all /api/* EXCEPT /api/auth/*, /api/healthz, /api/stripe/webhook, /api/config.
+
+CSRF: require header `x-fm-csrf` matching jwt.csrf on mutating endpoints. Skip for /api/stripe/webhook.
+
+Device fingerprint: every successful login → fp_hash = sha256(ip + ua + accept-language + sec-ch-ua); ua_label parsed via ua-parser-js into "{browser} on {os}". Upsert devices. security_events 'login_new_device' if new fp_hash for user.
+
+§1.1 MAILER
+artifacts/api-server/src/lib/mailer.ts — nodemailer SMTP from env SMTP_HOST, SMTP_PORT (587), SMTP_USER, SMTP_PASS, SMTP_FROM. Fallback when SMTP_HOST missing: console.log with banner "📧 SMTP NOT CONFIGURED — would have sent: ...". Template 'magic-code': branded, primary color tokens, big monospace code, 10-min expiry note, "If you didn't request this, ignore this email."
+
+§1.2 FRONTEND AUTH PAGES
+- pages/login.tsx: centered card (ambient orbs, mono uppercase labels, match new-session.tsx visual). Three sections stacked with dividers:
+  1. Username + Password form, show/hide password toggle
+  2. "Continue with Google" button using GIS script (loaded via index.html `<script src="https://accounts.google.com/gsi/client" async defer>`); on credential callback POST /api/auth/google. Hidden at runtime if !VITE_GOOGLE_CLIENT_ID.
+  3. "Continue with Email" — email input + "Send code"; flips to OTP-entry view with 6 input boxes, 10-min countdown, resend after 30s
+  On 429: dedicated lockout panel with live mm:ss countdown.
+  Inline field errors. 409 from Google flow shows specific guidance copy from server hint.
+- pages/change-password.tsx: title "Set a new password", min 12 chars, confirm, no current-pw field when passwordMustChange=true. On success: invalidate me, navigate to '/'.
+- Hooks lib/auth.ts: useAuthMe (retry:false, staleTime 60s), useLoginPassword, useLoginGoogle, useRequestEmailCode, useVerifyEmailCode, useLogout, useLogoutAll.
+- App.tsx <AuthGate>: probe useAuthMe; spinner on load; 401 + location !== '/login' → redirect /login; if authed AND me.passwordMustChange AND location !== '/change-password' → redirect /change-password and block other routes.
+- Fetch wrapper: credentials:'include', forward `x-fm-csrf` cookie value on mutations.
+
+OpenAPI tag `auth`: add all auth routes + me schema with the new fields. Codegen once at end.
+
+=== §2 LANDING / WELCOME PAGE (NEW "/") ===
+Move Dashboard to "/dashboard". Update sidebar nav (components/layout.tsx) accordingly.
+New pages/welcome.tsx mounted at "/", auth-gated.
+
+Personalization (Punkt 10):
+- Fetch useGetRecentSessions on mount.
+- If recentSessions.length === 0 (first-time experience):
+  - Hero h1 "Your AI conversation copilot.", sub "Real-time transcripts. Live AI assist. Zero prep."
+  - Primary CTA: "Start your first session" (Play icon) → /session/new
+  - Secondary CTA: "Take the 60-second tour" (Compass icon) → startTour()
+  - 3-col feature grid + "How it works" 3-step strip
+- If recentSessions.length > 0 (returning user):
+  - Hero h1 "Welcome back, {displayName}.", sub line shows last session: "Your last session: {title} · {timeAgo}"
+  - Primary CTA: "Resume" if lastSession.status==='active' (route /session/:id) else "Pick up where you left off" → /session/:id/notes for completed last session
+  - Secondary CTA: "Start new session" → /session/new
+  - Below: card row showing up to 3 recent sessions (compact, like history.tsx item) + small "View all in history" link
+  - Hide the feature-grid + "How it works" for returning users (they know)
+- Top-right ghost link "Go to dashboard →" always present.
+- "Replay tour" small link in footer area.
+- Set localStorage.fm_has_seen_welcome='1' on any CTA click.
+
+=== §3 TUTORIAL (driver.js) ===
+components/app-tour.tsx exports startTour(navigate). 7 steps, anchored on data-testid, smoothScroll, allowClose, animate. Final CTA "Start session →" → /session/new.
+Steps unchanged from previous spec (welcome → sidebar new-session → /session/new title input → copilot mode card → /dashboard stat → sidebar pricing → done).
+Auto-run once after first login if !localStorage.fm_tour_done (800ms after welcome mount). "Replay tour" link in settings.tsx + welcome.tsx footer. Mark fm_tour_done on completion/skip.
+
+=== §3.5 ADMIN AUDIT (PUNKT 3) ===
+New page pages/admin.tsx mounted at /admin, auth-gated, admin-only (if !me.isAdmin → 404 NotFound render).
+Layout: header "Admin · Audit", two tabs: "Security events" / "Users".
+
+Security events tab:
+- Live feed of GET /api/admin/events?limit=50&type=&userId=&since=
+- Auto-refresh every 10s via TanStack Query refetchInterval
+- Filter dropdowns: event type (all auth/account/plan event types), user (dropdown of all users by username/email)
+- Each row: ts, type chip (color by category — auth=blue, security=amber, plan=violet, account=gray), user label, ip, ua_label parsed, "details" expander showing meta jsonb pretty-printed
+- Empty state, skeleton loading.
+
+Users tab:
+- GET /api/admin/users → list { id, username, email, displayName, plan, planExpiresAt, last_login_at, last_login_ip, created_at, activeSessions: count, lockoutStatus }
+- Row actions menu: "Reset password" (forces password_must_change=true + null password_hash + sends magic code to email if set OR generates one-time temp pw shown once), "Revoke all sessions", "Manually set plan" (modal: pick plan + duration days)
+- All actions hit POST /api/admin/users/:id/{reset-password|revoke-sessions|set-plan}; all log security_events of type 'admin_*'
+
+Sidebar nav (components/layout.tsx): add "Admin" item with Shield icon, visible ONLY when me.isAdmin === true.
+
+Backend artifacts/api-server/src/routes/admin.ts (admin-only middleware: req.user.plan==='admin'):
+- GET /api/admin/events?limit&type&userId&since
+- GET /api/admin/users
+- POST /api/admin/users/:id/reset-password
+- POST /api/admin/users/:id/revoke-sessions
+- POST /api/admin/users/:id/set-plan {plan, durationDays}
+- (existing /api/admin/codes/* from §7 stay here)
+
+OpenAPI tag `admin`. Codegen.
+
+=== §4 MODE CHANGES (KEEP COPILOT INTACT) ===
+Existing Copilot mode = UNCHANGED. Do not touch session.tsx logic for mode==='copilot'. Do not delete or rewrite session-notes.tsx.
+
+new-session.tsx mode RadioGroup: keep "Live Copilot" AS-IS. Replace "Smart Notes" card with "Insight Mode":
+- value="insight", id="mode-insight", icon Compass, title "Insight Mode"
+- desc "AI surfaces live strategic insights — opportunities, risks, connections, questions — while you talk."
+- Free plan: disabled with Lock badge + tooltip "Upgrade to unlock" → /pricing.
+
+Mode union: 'copilot' | 'insight'. Keep DB column `mode` text. Legacy 'notes' sessions render in history with "Copilot (legacy)" badge, route to normal copilot view.
+
+session.tsx:
+- mode==='copilot': UNCHANGED.
+- mode==='insight': render additional right-side card <InsightStream /> (purely additive; copilot UI remains).
+- Both modes: add "View Notes" link in session header → /session/:id/notes.
+
+§4.1 SESSION PAUSE / RECOVERY (PUNKT 4)
+sessions table: add `last_heartbeat_at` timestamptz null. Migrate.
+- Frontend session.tsx: while session.status==='active', POST /api/sessions/:id/heartbeat every 30s (via setInterval, cleared on unmount).
+- Backend POST /api/sessions/:id/heartbeat: update last_heartbeat_at=now(); return current status.
+- Backend background tick (every 60s): for each session with status='active' AND last_heartbeat_at < now() - 5min → set status='idle'. Active insight tickers (see §4.3) check status before generating.
+- On session.tsx mount: GET session; if status==='idle' show modal "This session was paused 5+ minutes ago. Resume?" with [Resume] [End session] [View notes]. Resume → POST /api/sessions/:id/resume → status='active', last_heartbeat_at=now(). End → PATCH status='ended'. View notes → /session/:id/notes.
+
+§4.2 BROWSER SUPPORT CHECK (PUNKT 7)
+New components/browser-support-check.tsx. Wrap session.tsx body in <BrowserSupportCheck>{...}</BrowserSupportCheck>.
+Logic on mount:
+- speech supported = !!(window.SpeechRecognition || window.webkitSpeechRecognition)
+- parse UA via ua-parser-js → {browser, os, device}
+- mic permission check via navigator.permissions.query({name:'microphone'}) if supported (best-effort, may throw on iOS → treat as 'unknown')
+If !speech supported → render fullwidth notice card:
+  - icon AlertOctagon, title "Browser not supported"
+  - body: "FlowMind needs the Web Speech API. You're using {browser} on {os}." + tailored guidance:
+    - iOS: "Use Safari 14.5+ on iOS for limited support, or open this in Chrome/Edge on desktop."
+    - Android: "Use Chrome on Android."
+    - Desktop other: "Use Chrome, Edge, or Brave."
+  - "Continue anyway" small ghost link (degrades to manual notes only)
+If mic permission denied → notice "Microphone access blocked. Click the 🎤 icon in your browser's address bar to allow." with [Re-check] button.
+Pass-through children when supported AND permission granted/prompt.
+
+§4.3 INSIGHT MODE BACKEND + RATE LIMIT (PUNKT 5)
+ai_assists table: add nullable `category` text and `status` text default 'new'. Push.
+
+Backend artifacts/api-server/src/routes/ai.ts:
+- POST /api/ai/insights/generate {sessionId} — picks 1 random insight from pool, persists ai_assists row mode='insight' + category, returns it. Skips if session.status !== 'active'.
+- GET /api/ai/insights?sessionId — list mode='insight' rows for session, newest first.
+- PATCH /api/ai/insights/:id {status: 'used'|'dismissed'}.
+
+Per-user ticker (replaces per-session ticker — PUNKT 5):
+- Maintain Map<userId, { interval: NodeJS.Timeout, lastSessionId: number }> on server.
+- When a session transitions to mode='insight' AND status='active': if user has no ticker → start one (setInterval 15s); update lastSessionId to this session. If user already has a ticker → just update lastSessionId.
+- Each tick: pick the user's most recent active insight-mode session (re-query, since lastSessionId may be stale) → if found, generate 1 insight for it. If none found → clear interval, remove from map.
+- On session end / status change → no special handling; next tick will auto-prune.
+- Hard cap: tickers Map size logged every 5min. Defensive max 500 entries; reject new entries above with warn log.
+
+InsightStream component:
+- Polls GET /api/ai/insights?sessionId every 8s (TanStack Query refetchInterval).
+- Card schema: { id, category: 'opportunity'|'risk'|'connection'|'question', text, createdAt, status }.
+- Filter status==='new' || 'used' (hide 'dismissed').
+- Visual: small card, left accent bar (green/amber/blue/violet), category icon (Lightbulb/AlertTriangle/Link/HelpCircle), text, timestamp ago, [✓ Use] / [✕ Dismiss] buttons.
+- Empty state: "Listening for insights… first one drops in a moment."
+- framer-motion stagger entrance.
+
+Pool artifacts/api-server/src/lib/insight-pool.ts ~40 entries balanced across categories with examples like:
+{ category:'opportunity', text:'They mentioned budget pressure — pivot to cost-savings.' }
+{ category:'risk', text:'Hesitation detected — clarify scope before committing.' }
+{ category:'connection', text:'This ties back to the integration concern earlier.' }
+{ category:'question', text:'Worth asking: who else needs to sign off?' }
+
+NO Coach mode. NO speaker-diarization references.
+
+§4.4 SESSION-NOTES PDF BRANDING (PUNKT 6)
+session-notes.tsx exportPDF function — add footer on every page:
+- text-only (no SVG embed): footer line at bottom (y = pageHeight - 10mm), font size 8pt, color gray
+- left side: "Generated with FlowMind"
+- right side: deployed URL — read window.location.origin OR fall back to "flowmind.app"
+- page numbers center: "{n} / {total}"
+- Subtle 0.3mm horizontal line above footer
+Run footer rendering as a loop after all content pages are written, using doc.getNumberOfPages().
+
+=== §5 PRICING / LIMITS REWORK ===
+Single source-of-truth artifacts/api-server/src/lib/plans.ts:
+```ts
+export const PLAN_LIMITS = {
+  free:     { audioMinutes: 60,   aiRequests: 20,    historyDays: 3,    concurrent: 1,  insightMode: false, label: 'Free' },
+  pro:      { audioMinutes: 1500, aiRequests: 1000,  historyDays: null, concurrent: 3,  insightMode: true,  label: 'Pro' },
+  business: { audioMinutes: 7200, aiRequests: 10000, historyDays: null, concurrent: 10, insightMode: true,  label: 'Business' },
+  admin:    { audioMinutes: Infinity, aiRequests: Infinity, historyDays: null, concurrent: 99, insightMode: true, label: 'Admin' },
+} as const;
+```
+Admin plan never enforces limits — guard early in enforceUsage. Admin plan NOT shown on pricing.tsx.
+
+pricing.tsx bullets (mirror exactly):
+- Free $0: "1 hour audio / month", "20 AI requests / month", "3-day history retention", "1 active session", "Copilot mode"
+- Pro $29: "25 hours audio / month", "1,000 AI requests / month", "Unlimited history", "Insight mode unlocked", "3 concurrent sessions", "Custom vocab"
+- Business $99: "120 hours audio / month", "10,000 AI requests / month", "Team workspace (preview)", "10 concurrent sessions", "Priority support", "SSO (coming soon)"
+
+enforceUsage middleware (artifacts/api-server/src/middlewares/enforceUsage.ts):
+- if req.user.plan === 'admin' → next() immediately.
+- POST /api/transcripts: count month-to-date audio_minutes; ≥ limit → 402 { limitType:'audio', used, limit, upgradeUrl:'/pricing' }.
+- POST /api/ai/*: count month-to-date ai_requests; ≥ limit → 402.
+- Insight feature gate: if request implies insight mode AND PLAN_LIMITS[plan].insightMode===false → 402 { limitType:'feature' }.
+- Concurrent: POST /api/sessions count sessionsTable WHERE status IN ('active','idle') AND user_id=req.user.id; ≥ concurrent → 402.
+
+usage-limit-banner.tsx: 80% amber CTA, 100% hard-block modal.
+
+=== §6 ANTI-ABUSE ===
+- Brute-force: §1 multi-scope lockouts, DB-backed.
+- IP token bucket on /api/auth/*: §1.
+- Disposable email list (src/lib/disposable-emails.ts ~50 domains: mailinator.com, tempmail.com, guerrillamail.com, 10minutemail.com, sharklasers.com, throwawaymail.com etc.). /api/auth/email/request rejects 400 {error:'disposable_email'}.
+- Per-IP signup throttle: max 3 new accounts/IP/day across google + email paths (skip for seeded).
+- New-device audit: §1 devices + security_events.
+- Account-takeover hardening: §1-SEC (1) and (2) are MANDATORY.
+- Session revocation via user_sessions jti.
+- CSRF header echo on mutations.
+- verifyHumanCheck(req) stub: env CAPTCHA_PROVIDER='turnstile' → verify `x-captcha-token`; unset = no-op. Apply to /api/auth/email/request and /api/auth/google.
+- security_events types: login_success, login_failure, login_new_device, login_locked, password_changed, password_changed_forced, email_login_enabled, email_login_disabled, google_linked, google_unlinked, plan_upgrade_code, plan_upgrade_stripe, plan_set_admin, logout_all, account_email_changed, account_username_changed, session_revoked, admin_reset_password, admin_revoke_sessions, admin_set_plan.
+
+=== §7 PAYMENTS ===
+Keep stripe-replit-sync. Works only when Replit Stripe integration is connected.
+
+7a. /api/config (PUBLIC): GET → {stripeAvailable, googleAuthAvailable, appVersion, devBanner}.
+stripeAvailable = getUncachableStripeClient resolves AND ≥1 active price.
+googleAuthAvailable = !!process.env.GOOGLE_CLIENT_ID.
+If stripe init failed: devBanner = "Stripe not connected — open Replit Integrations tab → add Stripe → reload server."
+pricing.tsx / checkout-dialog.tsx: if !stripeAvailable, hide Stripe CTAs, show "Have an activation code?" card.
+
+7b. Activation codes (unchanged from prior spec):
+- POST /api/codes/redeem (authed) — 404/410/200 with new plan.
+- POST /api/admin/codes/generate (admin) — bulk gen FM-{PLAN}-{8-base32}-{4-base32}.
+- GET /api/admin/codes (admin) — last 200.
+
+=== §8 ACCOUNT SETTINGS PAGE ===
+settings.tsx existing usage/billing area stays. Prepend new "Account" section above Usage.
+
+A) Profile card
+- Avatar (Google avatar if available else gradient initials block, derived from displayName).
+- Display name (editable, PATCH /api/account/profile {displayName}).
+- Read-only: created_at, last_login_at.
+
+B) Identity card
+- Username — editable, server-side unique check, lowercase pattern `[a-z0-9_-]{3,24}`. PATCH /api/account/username.
+- Email — read-only if google_sub set; otherwise editable, change triggers re-verify magic code (PATCH /api/account/email {email} → 202, sends code with purpose='change_email'; POST /api/account/email/confirm {email, code} → finalize). Old email kept until confirmed.
+- Toggle "Allow email magic-code as a backup sign-in method" (binds to users.email_login_enabled, only meaningful if email set + password_hash set). PATCH /api/account/email-login {enabled}. Log security_events 'email_login_enabled'|'email_login_disabled'.
+
+C) Security card
+- "Change password" / "Set password" (latter if password_hash null) — dialog: currentPassword (omit if password_must_change=true or password_hash null), newPassword min 12, confirm. PATCH /api/account/password.
+- "Sign out everywhere" — destructive style, confirm dialog. POST /api/auth/logout-all → toast "Signed out of N other sessions" → re-issue current session jti.
+- Linked accounts:
+  - Google badge if google_sub set, with "Disconnect" (POST /api/account/unlink/google, refused if leaves no auth method).
+  - "Connect Google" if not — triggers GIS prompt, POST /api/account/link/google {idToken}, refused if google_sub already used elsewhere.
+- Active sessions list (PUNKT 8):
+  - GET /api/account/sessions → [{ jti, deviceLabel, ip, last_seen_at, created_at, isCurrent }]
+  - Each row: 🖥/📱 icon by parsed device type, ua_label, ip, "Last active {timeAgo}", badge "This device" on isCurrent, [End session] button on others → POST /api/account/sessions/:jti/revoke. Confirm dialog.
+  - Pagination not required (typically <10 rows).
+- Recent security events: collapsible, last 10 from GET /api/account/security-events. Row: ts, type, ip, ua_label, meta short.
+
+D) Misc
+- "Replay product tour" link → startTour().
+
+Backend artifacts/api-server/src/routes/account.ts:
+- PATCH /api/account/profile, /username, /email, /password, /email-login
+- POST /api/account/email/confirm, /link/google, /unlink/google
+- GET /api/account/sessions, /security-events
+- POST /api/account/sessions/:jti/revoke
+
+OpenAPI tag `account`. Codegen.
+
+=== §9 RETENTION ENFORCEMENT ===
+sessionsTable add user_id integer column (nullable; backfill existing to marcel; new sessions written with req.user.id).
+Boot + setInterval(24h) → for each session, look up owner plan; if PLAN_LIMITS[plan].historyDays !== null AND now - createdAt > historyDays → cascade delete (sessions + transcripts + meeting_notes + ai_assists). Admin sessions never expire.
+
+=== §10 OPENAPI ADDITIONS ===
+Update lib/api-spec/openapi.yaml with all new paths:
+- auth: /auth/login, /auth/google, /auth/email/request, /auth/email/verify, /auth/logout, /auth/logout-all, /auth/me
+- account: /account/profile PATCH, /account/username PATCH, /account/email PATCH, /account/email/confirm POST, /account/password PATCH, /account/email-login PATCH, /account/link/google POST, /account/unlink/google POST, /account/sessions GET, /account/sessions/:jti/revoke POST, /account/security-events GET
+- config: /config GET
+- codes: /codes/redeem POST, /admin/codes/generate POST, /admin/codes GET
+- admin: /admin/events GET, /admin/users GET, /admin/users/:id/reset-password POST, /admin/users/:id/revoke-sessions POST, /admin/users/:id/set-plan POST
+- ai: /ai/insights GET, /ai/insights/generate POST, /ai/insights/:id PATCH
+- sessions: /sessions/:id/heartbeat POST, /sessions/:id/resume POST
+ONE codegen run at the end: `pnpm --filter @workspace/api-spec run codegen`.
+
+=== §11 ROUTING ORDER ===
+artifacts/api-server/src/routes/index.ts mount order:
+1. auth (no requireAuth)
+2. config (no requireAuth)
+3. requireAuth middleware
+4. account, sessions (specific routes before /:id), transcripts, notes, usage, ai, codes
+5. requireAdmin middleware
+6. admin
+Stripe webhook stays in app.ts BEFORE express.json.
+
+Frontend App.tsx routes: /login outside AuthGate; inside gate: /, /dashboard, /change-password, /session/new, /session/:id/notes, /session/:id, /history, /pricing, /settings, /admin, fallback NotFound.
+
+=== §12 ACCEPTANCE — VERIFY BEFORE FINISHING ===
+- [ ] `pnpm run typecheck` passes
+- [ ] Unauthed visit to "/" or "/dashboard" → /login
+- [ ] Seeded user logs in → forced to /change-password BEFORE anything else; cannot navigate elsewhere; after change, lands on '/'
+- [ ] Google login works when GOOGLE_CLIENT_ID set; hidden otherwise
+- [ ] Email magic code creates a new account when email unknown
+- [ ] Email magic code with known password-account email AND email_login_enabled=false → 403 with guidance
+- [ ] Email magic code with known account AND email_login_enabled=true → logs in
+- [ ] Google sign-in with email matching a password-account → 409 with guidance (NOT auto-link)
+- [ ] Linking Google works only via Settings (authed flow)
+- [ ] 3 wrong passwords → 60s lock; refresh/cookie-clear cannot bypass; live countdown; escalates [60,300,900,3600,21600,86400]
+- [ ] "/" first-time shows hero + tour; with existing sessions shows "Welcome back" + last session card + Resume/Pick-up CTA
+- [ ] Tour runs all 7 steps; fm_tour_done persists
+- [ ] new-session shows Copilot + Insight (no Smart Notes); Insight locked on free
+- [ ] Copilot session UNCHANGED from before
+- [ ] Insight session shows InsightStream with categorized cards; mark-used / dismiss work
+- [ ] session-notes still reachable from both modes via "View Notes" link
+- [ ] Browser-support gate shows on unsupported browsers with correct guidance for iOS/Android/desktop
+- [ ] Session heartbeat fires every 30s while active; 5+ min absence → status='idle'; mount of idle session shows Resume modal
+- [ ] PDF export footer shows "Generated with FlowMind", deployment URL, page numbers
+- [ ] Insight ticker is per-user (open 3 tabs of insight sessions → still only 1 insight generated per 15s, targeted at the latest active one)
+- [ ] Pricing bullets match §5 exactly; admin plan never shown / never enforces limits
+- [ ] /api/config returns stripeAvailable + googleAuthAvailable
+- [ ] marcel can generate codes; another user redeems; reused → 410
+- [ ] Account settings: edit displayName/username, change/set password, toggle email-login backup, link/unlink Google, view active sessions (current marked), revoke other session, view recent security events
+- [ ] /admin route accessible only to marcel (others see NotFound); events feed live; user list with actions works
+- [ ] Retention deletes >3-day-old sessions for free-plan user; never for admin
+- [ ] No plaintext passwords or codes ever logged after initial seed banner
+
+=== §13 DO-NOTS ===
+- Do NOT touch session.tsx copilot rendering path.
+- Do NOT delete or restructure session-notes.tsx.
+- Do NOT keep "Smart Notes" as a selectable mode.
+- Do NOT add a Coach mode (no speaker diarization).
+- Do NOT auto-link Google sign-in to existing password-accounts by email match (§1-SEC).
+- Do NOT let magic-code email login bypass password sign-in for accounts that did not opt-in (§1-SEC).
+- Do NOT remove stripe-replit-sync, stripe routes, or webhook.
+- Do NOT edit lib/api-client-react or lib/api-zod generated output by hand.
+- Do NOT change OpenAPI title.
+- Do NOT introduce public username/password signup.
+- Do NOT log plaintext passwords or magic codes after the initial seed banner.
+- Do NOT bypass requireAuth for any data route.
+- Do NOT regenerate codegen multiple times — once at the end.
+- Do NOT enforce any usage limit when req.user.plan==='admin'.
+- Do NOT introduce new color tokens; reuse existing tailwind tokens.
+- Do NOT spawn insight tickers per session — strictly per user (§4.3).
+
+Execute all sections in order. At the end output a short summary listing: seed credentials banner reference, required env vars (AUTH_JWT_SECRET, GOOGLE_CLIENT_ID, VITE_GOOGLE_CLIENT_ID, SMTP_HOST/PORT/USER/PASS/FROM, optional CAPTCHA_PROVIDER), and any ambiguous decisions made.

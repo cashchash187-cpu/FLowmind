@@ -1,0 +1,444 @@
+Hier ist ein ausführlicher Prompt für Replit, damit dort direkt ein sauberer MVP + skalierbare Architektur gebaut wird.
+
+---
+
+# Replit Prompt – AI Conversation Copilot App (iOS + Android + Web)
+
+Baue eine moderne SaaS-App namens **"FlowMind"** (Name frei änderbar).
+
+Die App soll als:
+
+* iOS App (Apple Store)
+* Android App (Google Play Store)
+* Web App (Browser)
+
+verfügbar sein.
+
+Nutze einen **Cross-Platform Stack**, sodass möglichst viel Code gemeinsam genutzt wird.
+
+## Empfohlener Tech Stack
+
+Entscheide technisch sinnvoll, aber priorisiere:
+
+**Frontend**
+
+* React Native + Expo oder Flutter (bevorzugt React Native + Expo)
+* Responsive Web Version
+* Modernes UI
+* Dark/Light Mode
+* Sehr schnelle Performance
+
+**Backend**
+
+* Node.js / TypeScript
+* PostgreSQL
+* Realtime Architektur
+* WebSockets / Streaming
+* Skalierbare API
+
+**Auth**
+
+* Email
+* Google Login
+* Apple Login
+
+**Cloud**
+
+* Architektur cloud-ready bauen
+* Audio-Streaming und KI-Aufrufe effizient
+
+---
+
+# Produktidee
+
+Die App ist ein **AI Conversation Copilot**.
+
+User können Gespräche live mithören lassen.
+
+Die App bekommt Mikrofon-Zugriff und verarbeitet Gespräche in Echtzeit.
+
+Wichtig:
+
+* mehrere Sprecher erkennen (Speaker Diarization)
+* Live-Transkription
+* KI-Assistenz während des Gesprächs
+* automatische Notizen
+* intelligente Zusammenfassungen
+* SaaS-Abomodell
+
+Die UX soll sich wie ein Premium-Produkt anfühlen.
+
+Minimalistisch.
+
+Sehr wenig Klicks.
+
+Fast wie ein unsichtbarer Assistent.
+
+---
+
+# Hauptseite 1 – Live Conversation Mode
+
+## Kernfunktion
+
+User gibt Mikrofon-Zriff.
+
+Danach:
+
+* Gespräch wird live aufgenommen
+* Live transkribiert
+* Sprecher automatisch erkannt
+* Gespräch als Chat-/Timeline dargestellt
+
+UI ähnlich:
+
+Speaker A:
+Text...
+
+Speaker B:
+Text...
+
+Live und nahezu ohne Verzögerung.
+
+---
+
+## AI Copilot Button
+
+Es gibt einen festen, immer sichtbaren Button:
+
+**"AI Assist"**
+
+Wenn gedrückt:
+
+KI analysiert den aktuellen Gesprächskontext und liefert sofort eine passende Unterstützung.
+
+Mehrere Modi:
+
+### 1. Einwand / Idee
+
+KI schlägt vor:
+
+* guten Einwand
+* intelligente Frage
+* Gegenargument
+* kreative Idee
+* diplomatische Antwort
+* strategischen Gesprächsimpuls
+
+Kontextabhängig.
+
+Nicht generisch.
+
+Wie ein Live-Berater.
+
+---
+
+### 2. Antwort-Modus
+
+Wenn jemand eine Frage stellt:
+
+User kann:
+
+**"Answer with AI"**
+
+drücken.
+
+KI generiert sofort:
+
+* präzise Antwort
+* faktenbasiert
+* kurz oder ausführlich
+
+Option:
+
+* nur Vorschlag
+* oder Text-to-Speech Antwort
+
+---
+
+## AI Agent Layer
+
+Baue ein internes Agent-System.
+
+Nicht nur ein einzelner KI-Call.
+
+Agent-Rollen:
+
+### Context Agent
+
+* versteht Gespräch
+* merkt Themen
+* erkennt Intentionen
+
+### Strategy Agent
+
+* bewertet Gesprächsdynamik
+* erkennt Chancen / Risiken
+
+### Knowledge Agent
+
+* beantwortet Faktenfragen
+* recherchiert ggf.
+
+### Response Agent
+
+* formuliert finale Antwort
+
+Orchestrierung intelligent bauen.
+
+Low latency priorisieren.
+
+---
+
+# Hauptseite 2 – AI Meeting / Notes Mode
+
+Zweite Seite:
+
+**Meeting Notes**
+
+Hier steht nicht Assistenz im Fokus, sondern:
+
+vollautomatische Dokumentation.
+
+Während gesprochen wird:
+
+automatisch:
+
+* Live-Zusammenfassung
+* Action Items
+* Entscheidungen
+* offene Fragen
+* wichtigste Erkenntnisse
+
+User soll keine Notizen mehr machen müssen.
+
+---
+
+## Erweiterte KI-Funktionen
+
+Optional einschaltbar:
+
+### Logic Check
+
+KI prüft:
+
+* Widersprüche
+* unlogische Aussagen
+* fehlende Annahmen
+* Denkfehler
+* Risiken
+
+Markiert diese transparent.
+
+---
+
+### Explain Mode
+
+Optionaler Toggle:
+
+**"Explain More"**
+
+Wenn aktiv:
+
+KI ergänzt automatisch:
+
+* Hintergrundwissen
+* Definitionen
+* kurze Erklärungen
+* Kontext
+
+Direkt neben Notizen.
+
+Wie ein intelligenter Kommentator.
+
+---
+
+# Audio / Speech Architektur
+
+Entscheide technisch sinnvoll.
+
+Prioritäten:
+
+1 niedrige Latenz
+2 hohe Qualität
+3 niedrige API-Kosten
+
+Berücksichtige:
+
+* Streaming Speech-to-Text
+* Speaker Diarization
+* Audio Chunking
+* Caching
+* effiziente Token-Nutzung
+
+App soll stundenlange Gespräche verarbeiten können.
+
+---
+
+# KI-Modellstrategie
+
+Implementiere flexible Model-Layer.
+
+API-Key wird später vom User/Admin hinterlegt.
+
+System soll mehrere Modelle unterstützen.
+
+Empfohlene Architektur:
+
+### Speech-to-Text
+
+* Streaming STT
+* hohe Genauigkeit
+* Sprechererkennung
+
+### Fast Copilot Model
+
+Für Live-Antworten:
+
+* niedrige Latenz
+* günstiger
+
+### Deep Reasoning Model
+
+Für:
+
+* Zusammenfassungen
+* Logikprüfung
+* komplexe Analyse
+
+Model-Routing automatisch.
+
+Kosten optimieren.
+
+---
+
+# Seite 3 – Pricing / Subscription
+
+Separate Subscription-Seite.
+
+Modernes SaaS Pricing.
+
+Mit:
+
+* Monatsabo
+* Jahresabo
+* Upgrade Flow
+* Account Management
+
+Zahlungsmethoden:
+
+* Apple In-App Purchase
+* Google Play Billing
+* Kreditkarte
+* PayPal
+* Web Checkout
+
+---
+
+## Preislogik
+
+API-Kosten intelligent einrechnen.
+
+Erstelle sinnvolles Modell:
+
+### Free
+
+Begrenzt:
+
+* wenige Minuten/Monat
+* Demo
+
+### Pro
+
+Für normale Nutzer
+
+### Business
+
+Für Teams / Vielnutzer
+
+Kalkulation so bauen, dass:
+
+* KI-Kosten gedeckt
+* Marge vorhanden
+* Skalierung möglich
+
+Usage Tracking implementieren:
+
+* Audio-Minuten
+* KI-Requests
+* Verbrauch
+
+---
+
+# Datenschutz & Compliance
+
+Sehr wichtig.
+
+Berücksichtige:
+
+* DSGVO
+* Consent für Audio
+* Datenschutz-Settings
+* Löschfunktion
+* Verschlüsselung
+* sichere Speicherung
+
+User entscheidet:
+
+* nur Live
+* speichern
+* lokal löschen
+
+---
+
+# UX / UI
+
+Designrichtung:
+
+* Premium SaaS
+* minimalistisch
+* futuristisch
+* sehr intuitiv
+* mobile-first
+
+Erstelle:
+
+* komplette Navigation
+* Wireframe-Struktur
+* Komponenten
+* MVP Flow
+* durchdachte States
+* Error Handling
+* Loading States
+
+---
+
+# Entwickler-Aufgabe
+
+Baue nicht nur Mockups.
+
+Erstelle:
+
+1. komplette Architektur
+2. Datenbankmodell
+3. API-Struktur
+4. MVP Implementierung
+5. funktionsfähige Grundversion
+6. sauberen, skalierbaren Code
+7. klare README und Setup-Anleitung
+
+Arbeite wie ein Senior Product + Fullstack Team.
+
+Treffe selbst sinnvolle technische Entscheidungen und erkläre sie im Code und der Dokumentation.
+
+---
+
+**Meine Ergänzung zur KI-Auswahl und Kostenstrategie (für dich):**
+
+Für so eine App ist meist effizient:
+
+* **Speech-to-Text:** spezialisierter Streaming-STT mit Speaker-Erkennung
+* **Live-Copilot:** schnelles, günstigeres Modell für Reaktionsgeschwindigkeit
+* **Deep Analysis / Notes:** stärkeres Reasoning-Modell für Qualität
+* **Model-Routing** spart oft massiv Kosten, statt immer das teuerste Modell zu nutzen.
+
+Preislich wird ein realistisches SaaS-Modell häufig eher über **Nutzungsminuten + Abo-Stufen** kalkuliert als über unbegrenzte Nutzung. Dadurch bleibt die Marge stabil, wenn Nutzer lange Meetings oder viele KI-Abfragen machen.

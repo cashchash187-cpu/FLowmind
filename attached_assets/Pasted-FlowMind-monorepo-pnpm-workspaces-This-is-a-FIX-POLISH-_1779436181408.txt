@@ -1,0 +1,129 @@
+FlowMind monorepo (pnpm workspaces). This is a FIX + POLISH pass on the existing app. Do NOT rebuild from scratch. Inspect current code before changing. Preserve all existing working features (auth lockout, activation codes, pricing/limits, admin audit, retention, settings). Stay in existing patterns: OpenAPI-first (codegen once at end if spec changes), Drizzle, Express 5, shadcn/ui, wouter, TanStack Query, framer-motion. Transcript source = browser Web Speech API only.
+
+FIRST: print a short plan listing every § you will touch. Then ask the user for any missing secrets (see §5, §6) and STORE them in Replit Secrets. Then execute.
+
+=== §1 TRANSCRIPTION RELIABILITY (TOP PRIORITY) ===
+Symptoms to fix:
+(a) After a pause, recognition restarts a "new segment" and drops the first ~seconds of the next utterance.
+(b) Non-native English produces many errors.
+(c) Output feels chunked into disconnected boxes.
+
+Root cause is improper Web Speech API lifecycle. Rework the speech hook (find it — likely in session.tsx or a use-speech hook; if inline, extract to artifacts/flowmind/src/lib/use-speech-recognition.ts).
+
+Required implementation:
+- Single long-lived SpeechRecognition instance per active session. Config: continuous=true, interimResults=true, maxAlternatives=1, lang from a user-selectable setting (default 'en-US').
+- NEVER let it die silently. onend handler: if session still active AND not intentionally stopped → call recognition.start() immediately inside try/catch (swallow "already started" InvalidStateError). This eliminates the multi-second cold-restart gap.
+- Watchdog timer: if no onresult AND no onspeechstart for 6s while session active → force a stop()+start() cycle to recover from silent hangs. Browsers (esp. Chrome) auto-terminate after ~50–60s of silence; the watchdog + onend-restart must make this seamless.
+- Interim results: render the live interim transcript IMMEDIATELY in a "live line" at the bottom of the transcript (greyed/italic), updating on every onresult. Do NOT wait for isFinal to show text. This removes the perceived "verpasst den Anfang" lag.
+- Commit logic (fixes chunked boxes): maintain a rolling buffer. Append final results to the buffer. Flush a transcript chunk to POST /api/transcripts only when EITHER (i) a sentence-ending punctuation/clear pause boundary is detected, OR (ii) buffer reaches ~200 chars, OR (iii) 4s elapsed since last flush with non-empty buffer. On restart/onend, flush whatever is in the interim buffer as final so nothing is lost across restarts.
+- Guard against duplicate final results (Chrome sometimes re-emits): track resultIndex (event.resultIndex) and only process new result entries.
+- Add a small language/accent selector in the session header (en-US, en-GB, en-IN, de-DE, plus a few common ones) that sets recognition.lang live (restart recognizer on change). Persist choice in localStorage `fm_stt_lang`. Setting the correct lang materially improves accuracy for non-native speakers — surface a one-time hint "Tip: set your spoken language for better accuracy."
+- Cleanup: on session end / component unmount, set an intentionalStop flag, stop recognizer, clear watchdog + flush timers.
+
+Acceptance: speaking with 2–3s pauses between sentences loses NO leading words; transcript reads as continuous flowing text, not fragmented cards; live interim text appears within ~300ms of speaking.
+
+=== §2 INSIGHT MODE — CONTENT-AWARE + ACTIVITY-GATED ===
+Current insights are random from pool, fire on a blind timer even during silence, and are irrelevant. Replace the trigger + selection logic.
+
+Trigger gating (server side, §4.3-equivalent ticker):
+- Track per active insight-session: lastTranscriptCharCount and lastInsightAt.
+- Generate an insight ONLY when ALL true: (i) ≥ 25s since lastInsightAt, (ii) ≥ 150 new transcript characters accumulated since lastInsightAt (proves the person actually spoke meaningful content), (iii) session.status==='active' with a recent heartbeat (< 60s). If no new speech → generate NOTHING. This stops insights during silence.
+- Keep the per-USER ticker (not per-session). Tick every 10s but apply the gate above before generating.
+
+Content relevance (replace random pick):
+- On generation, pull the last ~600 chars of the session transcript. Build a keyword/intent matcher: tag each pool entry with trigger keywords/phrases (e.g. price/budget/cost → opportunity 'cost-savings'; "not sure"/"maybe"/"concern"/"worried" → risk; "earlier"/"you mentioned"/repeated topic → connection; absence of discovery questions → question).
+- Score pool entries against the recent transcript (simple keyword overlap / regex hits). Pick the highest-scoring entry not already shown this session. If NO entry scores above a minimum threshold → generate nothing (better silence than noise).
+- Expand insight-pool.ts to ~60 entries, each: { category, text, triggers: string[] }. Cover budget/pricing, hesitation/objection, timeline, decision-makers, scope, competitor mentions, positive buying signals, missing discovery.
+- Never repeat an insight already shown in the same session (track shown ids).
+
+Frontend InsightStream: unchanged visually, but add an empty/idle state line "Insights appear when the conversation gives the AI something to work with." so silence feels intentional, not broken.
+
+=== §3 WHITE-SCREEN ON FIRST LOGIN + NAV HANGS (BUGS) ===
+(a) New account → blank white screen on first entry. Likely causes: a query (recent sessions / usage) returns empty or errors and a component renders undefined, OR a passwordMustChange / welcome redirect loop, OR missing usage row for fresh accounts. Fix all:
+- Ensure EVERY new account gets a usage row created on first authenticated request (lazy-init in usage middleware/route if absent) — never 404 the frontend into a crash.
+- welcome.tsx + dashboard + settings must handle empty/loading/error states with skeletons or empty states, never render against undefined data. Add defensive null-guards.
+- Add a top-level React Error Boundary (artifacts/flowmind/src/components/error-boundary.tsx) wrapping the router; on error show a friendly "Something went wrong — reload" card instead of white screen, and console.error the cause.
+- Verify AuthGate has no redirect loop: states must resolve to exactly one of {spinner | redirect-to-login | redirect-to-change-password | render children}, never a flicker loop. Guard with a settled flag.
+(b) Page transitions sometimes hang. Inspect framer-motion AnimatePresence in App.tsx: ensure mode="wait" with a stable `key={location}`, and that exit animations can't deadlock (cap transition duration ~0.25s, add `initial={false}` where appropriate). Ensure no route component suspends without a boundary. If a TanStack query blocks navigation, set sensible staleTime and keepPreviousData so route changes don't await network.
+
+Acceptance: brand-new email/Google account lands cleanly on welcome (no white screen); rapid sidebar navigation never hangs.
+
+=== §4 HOME + TUTORIAL VISUAL UPGRADE ===
+Home (welcome.tsx): the page must have a striking visual hero, not just buttons.
+- Add an animated hero visual to the right of (desktop) / above (mobile) the headline + CTAs. Build it in pure SVG/CSS/framer-motion (no new deps, no external images). Suggested: an abstract "live conversation" motif — animated audio-waveform bars reacting in a loop, with floating insight/transcript "cards" that gently drift and fade, plus a soft animated gradient/aurora glow using existing primary tokens. Make it feel alive and premium (think Linear / Vercel landing aesthetic).
+- Respect prefers-reduced-motion: fall back to a static version.
+- Keep functional CTAs prominent (Start session / Take tour / Resume).
+- Returning-user variant (welcome back + last session) keeps the hero visual but smaller.
+
+Tutorial (driver.js): make it visually polished.
+- Custom-theme the driver.js popovers to match the app (rounded-2xl, app fonts, primary accents, subtle shadow, dark/light aware) via a custom CSS class on the driver instance — override default driver.js styling.
+- Add a progress indicator ("Step 2 of 7") and smooth highlight transitions.
+- Friendlier copy with a touch of personality; each step gets a tiny relevant lucide icon in the popover title.
+- Ensure highlighted elements are scrolled into view and not clipped by sticky headers/sidebar.
+
+=== §5 EMAIL DELIVERY — SWITCH TO RESEND ===
+Magic codes currently never arrive (SMTP unset → console fallback). Replace mailer with Resend.
+- Add dep `resend` to artifacts/api-server.
+- Rewrite artifacts/api-server/src/lib/mailer.ts to use Resend SDK with env RESEND_API_KEY and FROM address env MAIL_FROM (default "FlowMind <onboarding@resend.dev>" which works without domain verification for testing).
+- If RESEND_API_KEY missing → keep the console.log fallback BUT also surface a clear devBanner via /api/config: "Email sending not configured — set RESEND_API_KEY."
+- Ask the user for their RESEND_API_KEY and store in Replit Secrets. Tell them: for production they should verify a domain in Resend; for now onboarding@resend.dev sends to their own address.
+- Branded HTML template for the 6-digit code (existing design language, big monospace code, 10-min expiry).
+
+=== §6 GOOGLE SIGN-IN — MAKE IT ACTUALLY WORK ===
+Currently no Google popup on login, and Settings "Connect Google" button is dead. Fix end-to-end.
+- Ask the user for GOOGLE_CLIENT_ID (and VITE_GOOGLE_CLIENT_ID — same value, frontend-exposed). Store in Replit Secrets. Tell them to add their Replit app URL to "Authorized JavaScript origins" in Google Cloud Console → Credentials.
+- Frontend: ensure the GIS script `https://accounts.google.com/gsi/client` is actually loaded in index.html. On login.tsx render a real Google button via `google.accounts.id.renderButton` (the standard Google sign-in button UI) AND/OR initialize `google.accounts.id.initialize({ client_id, callback })` with `google.accounts.id.prompt()`. The button must be visible when VITE_GOOGLE_CLIENT_ID is set; if unset show a disabled state with tooltip "Google sign-in not configured" instead of hiding silently.
+- On credential callback → POST /api/auth/google {idToken: response.credential}. Backend already verifies; confirm it works and returns a session.
+- Settings "Connect Google" button: wire it to the same GIS flow but call POST /api/account/link/google {idToken}. Currently it does nothing — make the onClick actually trigger google.accounts.id.prompt() (or a dedicated button) and handle the callback. Show success toast + refresh me. Handle 409 (google account already linked elsewhere) with a clear message.
+- Verify unlink works and the "≥1 auth method must remain" guard holds.
+
+Acceptance: clicking Google on login opens the real Google account chooser and logs in; Settings connect/disconnect Google works with visible feedback.
+
+=== §7 SESSION DATA ISOLATION AUDIT (SECURITY) ===
+Verify NO cross-account data leakage. Audit every data route:
+- sessions, transcripts, meeting_notes, ai_assists, usage, insights — EVERY read and write must be scoped to req.user.id.
+- GET /api/sessions, /sessions/recent, /sessions/stats, /sessions/:id, /history → filter WHERE user_id = req.user.id. /sessions/:id must 404 (not 403, to avoid enumeration) if the session's user_id != req.user.id.
+- transcripts/notes/ai_assists/insights for a session: verify the session belongs to req.user.id BEFORE returning or mutating. Reject otherwise.
+- usage + usage_history: scoped per user (add user_id if the table is still global — CHECK current schema; if usage is not yet per-user, migrate it to per-user and backfill).
+- Admin (plan='admin') may read across users ONLY through /api/admin/* routes, never through normal data routes.
+- Add a quick automated check or at least log a startup assertion. List in the final summary any route that was found leaking and how it was fixed.
+
+Acceptance: logging in as user1 shows none of marcel's or user2's sessions/usage/insights.
+
+=== §8 THEME / COLOR CONTRAST ===
+Both themes are too flat. Increase layering contrast via the CSS theme tokens (find the tokens file — likely index.css / globals with :root and .dark custom properties).
+Light mode:
+- Make a clearer hierarchy: page background slightly off-white/neutral, cards pure white with a touch more border + soft shadow, sidebar a distinct subtle tint, muted/secondary surfaces a visibly different grey. Increase border contrast. Goal: surfaces read as separate layers, not one flat sheet.
+Dark mode:
+- Currently near-pure black and monotone. Lift it: base background to a dark neutral (e.g. ~#0d0f12 / zinc-950-ish) NOT pure black, cards one step lighter (~zinc-900), elevated/popover surfaces another step lighter (~zinc-800), borders a visible lighter grey. Add subtle elevation so cards/sidebar/inputs are clearly distinguishable. Keep primary accent vivid against the darker neutrals.
+- Adjust muted-foreground for adequate contrast (WCAG AA-ish) in both modes.
+Only adjust existing token VALUES + add elevation layers; do NOT introduce arbitrary new color names scattered through components. Verify every page (welcome, dashboard, session, settings, pricing, admin, login) looks correct in both modes.
+
+=== §9 ACCEPTANCE CHECKLIST ===
+- [ ] `pnpm run typecheck` passes
+- [ ] Speaking with pauses loses no leading words; transcript is continuous; interim text live within ~300ms
+- [ ] Language selector changes recognition.lang and persists
+- [ ] Insights fire ONLY after meaningful new speech, never during silence, and are topically relevant to recent transcript; silence shows idle state
+- [ ] New email/Google account → no white screen, lands on welcome; usage row auto-created
+- [ ] Error boundary catches render errors instead of white screen
+- [ ] Rapid navigation never hangs
+- [ ] Welcome page has an animated premium hero visual (reduced-motion fallback)
+- [ ] Tutorial popovers themed, show step progress, scroll targets into view
+- [ ] Magic code email actually arrives via Resend (with RESEND_API_KEY set)
+- [ ] Google login opens real account chooser and logs in; Settings connect/disconnect Google works
+- [ ] Data isolation verified: user1 cannot see other users' sessions/usage/insights; /sessions/:id 404s for non-owner
+- [ ] Light + dark mode show clear layered contrast across all pages
+- [ ] No existing feature (lockout, codes, pricing, admin, retention, account settings) regressed
+
+=== §10 DO-NOTS ===
+- Do NOT rebuild from scratch; modify existing code.
+- Do NOT break copilot mode or session-notes.tsx.
+- Do NOT remove auth hardening (§1-SEC takeover protections), lockout, CSRF, or stripe-replit-sync.
+- Do NOT edit generated codegen output by hand; codegen once at end if spec changed.
+- Do NOT log plaintext passwords or magic codes.
+- Do NOT enforce limits for plan='admin'.
+- Do NOT introduce per-session insight tickers (per-user only) or random insight selection (must be content-scored + gated).
+- Do NOT use pure black in dark mode.
+- Do NOT add deps beyond: resend.
+
+Execute all sections in order. End with a summary: secrets you need from the user (RESEND_API_KEY, GOOGLE_CLIENT_ID, VITE_GOOGLE_CLIENT_ID) and their status, any data-isolation leaks found + fixed, and any ambiguous decisions.

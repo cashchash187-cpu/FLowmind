@@ -1,0 +1,1558 @@
+openapi: 3.1.0
+info:
+  # Do not change the title, if the title changes, the import paths will be broken
+  title: Api
+  version: 0.1.0
+  description: FlowMind AI Conversation Copilot API
+servers:
+  - url: /api
+    description: Base API path
+tags:
+  - name: health
+    description: Health operations
+  - name: sessions
+    description: Conversation session operations
+  - name: transcripts
+    description: Transcript and speaker operations
+  - name: notes
+    description: Meeting notes and summaries
+  - name: ai
+    description: AI copilot operations
+  - name: usage
+    description: Usage tracking operations
+  - name: auth
+    description: Authentication operations
+  - name: account
+    description: Account management operations
+  - name: admin
+    description: Admin operations
+  - name: config
+    description: App configuration
+  - name: research
+    description: Live web research operations
+
+paths:
+  /healthz:
+    get:
+      operationId: healthCheck
+      tags: [health]
+      summary: Health check
+      description: Returns server health status
+      responses:
+        "200":
+          description: Healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/HealthStatus"
+
+  /config:
+    get:
+      operationId: getConfig
+      tags: [config]
+      summary: Get app configuration
+      responses:
+        "200":
+          description: App config
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AppConfig"
+
+  /auth/login:
+    post:
+      operationId: login
+      tags: [auth]
+      summary: Login with username/password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/LoginRequest"
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "401":
+          description: Invalid credentials
+        "423":
+          description: Locked out
+
+  /auth/google:
+    post:
+      operationId: googleAuth
+      tags: [auth]
+      summary: Sign in with Google ID token
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/GoogleAuthRequest"
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "409":
+          description: Email conflict
+
+  /auth/email/request:
+    post:
+      operationId: requestEmailCode
+      tags: [auth]
+      summary: Request magic code via email
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailCodeRequest"
+      responses:
+        "202":
+          description: Code sent
+        "400":
+          description: Bad request
+
+  /auth/email/verify:
+    post:
+      operationId: verifyEmailCode
+      tags: [auth]
+      summary: Verify email magic code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/EmailCodeVerify"
+      responses:
+        "200":
+          description: Authenticated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AuthResponse"
+        "400":
+          description: Invalid or expired code
+
+  /auth/logout:
+    post:
+      operationId: logout
+      tags: [auth]
+      summary: Logout current session
+      responses:
+        "200":
+          description: Logged out
+
+  /auth/logout-all:
+    post:
+      operationId: logoutAll
+      tags: [auth]
+      summary: Revoke all sessions
+      responses:
+        "200":
+          description: All sessions revoked
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  revokedCount:
+                    type: integer
+
+  /auth/me:
+    get:
+      operationId: getMe
+      tags: [auth]
+      summary: Get current user
+      responses:
+        "200":
+          description: Current user
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CurrentUser"
+        "401":
+          description: Unauthorized
+
+  /account/profile:
+    patch:
+      operationId: updateProfile
+      tags: [account]
+      summary: Update display name
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                displayName:
+                  type: string
+      responses:
+        "200":
+          description: Updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/CurrentUser"
+
+  /account/username:
+    patch:
+      operationId: updateUsername
+      tags: [account]
+      summary: Update username
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [username]
+              properties:
+                username:
+                  type: string
+      responses:
+        "200":
+          description: Updated
+        "409":
+          description: Username taken
+
+  /account/email:
+    patch:
+      operationId: updateEmail
+      tags: [account]
+      summary: Update email (initiates verification)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email]
+              properties:
+                email:
+                  type: string
+      responses:
+        "202":
+          description: Verification code sent
+
+  /account/email/confirm:
+    post:
+      operationId: confirmEmailChange
+      tags: [account]
+      summary: Confirm email change with code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, code]
+              properties:
+                email:
+                  type: string
+                code:
+                  type: string
+      responses:
+        "200":
+          description: Email updated
+
+  /account/password:
+    patch:
+      operationId: updatePassword
+      tags: [account]
+      summary: Change password
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/PasswordChangeRequest"
+      responses:
+        "200":
+          description: Password updated
+
+  /account/email-login:
+    patch:
+      operationId: updateEmailLogin
+      tags: [account]
+      summary: Toggle email magic-code login
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [enabled]
+              properties:
+                enabled:
+                  type: boolean
+      responses:
+        "200":
+          description: Updated
+
+  /account/link/google:
+    post:
+      operationId: linkGoogle
+      tags: [account]
+      summary: Link Google account
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [idToken]
+              properties:
+                idToken:
+                  type: string
+      responses:
+        "200":
+          description: Linked
+        "409":
+          description: Google account already used
+
+  /account/unlink/google:
+    post:
+      operationId: unlinkGoogle
+      tags: [account]
+      summary: Unlink Google account
+      responses:
+        "200":
+          description: Unlinked
+        "400":
+          description: Would leave no auth method
+
+  /account/sessions:
+    get:
+      operationId: getAccountSessions
+      tags: [account]
+      summary: Get active sessions
+      responses:
+        "200":
+          description: Sessions list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AccountSession"
+
+  /account/sessions/{jti}/revoke:
+    post:
+      operationId: revokeAccountSession
+      tags: [account]
+      summary: Revoke a session
+      parameters:
+        - name: jti
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Revoked
+
+  /account/security-events:
+    get:
+      operationId: getSecurityEvents
+      tags: [account]
+      summary: Get recent security events
+      responses:
+        "200":
+          description: Security events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SecurityEventRow"
+
+  /codes/redeem:
+    post:
+      operationId: redeemCode
+      tags: [account]
+      summary: Redeem an activation code
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [code]
+              properties:
+                code:
+                  type: string
+      responses:
+        "200":
+          description: Plan upgraded
+        "404":
+          description: Code not found
+        "410":
+          description: Code already used
+
+  /admin/codes/generate:
+    post:
+      operationId: generateCodes
+      tags: [admin]
+      summary: Generate activation codes
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan, count]
+              properties:
+                plan:
+                  type: string
+                count:
+                  type: integer
+                durationDays:
+                  type: integer
+      responses:
+        "200":
+          description: Generated codes
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: string
+
+  /admin/codes:
+    get:
+      operationId: listCodes
+      tags: [admin]
+      summary: List activation codes
+      responses:
+        "200":
+          description: Codes list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ActivationCodeRow"
+
+  /admin/events:
+    get:
+      operationId: listSecurityEventsFeed
+      tags: [admin]
+      summary: List security events feed
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+        - name: type
+          in: query
+          schema:
+            type: string
+        - name: userId
+          in: query
+          schema:
+            type: integer
+        - name: since
+          in: query
+          schema:
+            type: string
+      responses:
+        "200":
+          description: Events
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SecurityEventRow"
+
+  /admin/users:
+    get:
+      operationId: listAdminUsers
+      tags: [admin]
+      summary: List users
+      responses:
+        "200":
+          description: Users list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/AdminUserRow"
+
+  /admin/users/{id}/reset-password:
+    post:
+      operationId: adminResetPassword
+      tags: [admin]
+      summary: Reset user password
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Reset done
+
+  /admin/users/{id}/revoke-sessions:
+    post:
+      operationId: adminRevokeSessions
+      tags: [admin]
+      summary: Revoke all sessions for user
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Sessions revoked
+
+  /admin/users/{id}/set-plan:
+    post:
+      operationId: adminSetPlan
+      tags: [admin]
+      summary: Manually set user plan
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan]
+              properties:
+                plan:
+                  type: string
+                durationDays:
+                  type: integer
+      responses:
+        "200":
+          description: Plan updated
+
+  /sessions:
+    get:
+      operationId: listSessions
+      tags: [sessions]
+      summary: List all conversation sessions
+      responses:
+        "200":
+          description: List of sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/Session"
+    post:
+      operationId: createSession
+      tags: [sessions]
+      summary: Create a new conversation session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SessionInput"
+      responses:
+        "201":
+          description: Created session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+
+  /sessions/stats:
+    get:
+      operationId: getSessionStats
+      tags: [sessions]
+      summary: Get session statistics dashboard summary
+      responses:
+        "200":
+          description: Session statistics
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionStats"
+
+  /sessions/recent:
+    get:
+      operationId: getRecentSessions
+      tags: [sessions]
+      summary: Get recent sessions with preview
+      responses:
+        "200":
+          description: Recent sessions
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/SessionPreview"
+
+  /sessions/{id}:
+    get:
+      operationId: getSession
+      tags: [sessions]
+      summary: Get a session by ID
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Session details
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "404":
+          description: Not found
+    patch:
+      operationId: updateSession
+      tags: [sessions]
+      summary: Update a session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/SessionUpdate"
+      responses:
+        "200":
+          description: Updated session
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "404":
+          description: Not found
+    delete:
+      operationId: deleteSession
+      tags: [sessions]
+      summary: Delete a session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "204":
+          description: Deleted
+
+  /sessions/{id}/end:
+    patch:
+      operationId: endSession
+      tags: [sessions]
+      summary: End an active session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Session ended
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+
+  /sessions/{id}/heartbeat:
+    post:
+      operationId: sessionHeartbeat
+      tags: [sessions]
+      summary: Send heartbeat for active session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Heartbeat acknowledged
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status:
+                    type: string
+
+  /sessions/{id}/resume:
+    post:
+      operationId: resumeSession
+      tags: [sessions]
+      summary: Resume an idle session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Session resumed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+
+  /sessions/{id}/transcripts:
+    get:
+      operationId: listTranscripts
+      tags: [transcripts]
+      summary: List transcript entries for a session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Transcript entries
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/TranscriptEntry"
+    post:
+      operationId: addTranscript
+      tags: [transcripts]
+      summary: Add a transcript entry to a session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/TranscriptInput"
+      responses:
+        "201":
+          description: Created transcript entry
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TranscriptEntry"
+
+  /sessions/{id}/notes:
+    get:
+      operationId: getSessionNotes
+      tags: [notes]
+      summary: Get meeting notes for a session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Meeting notes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeetingNotes"
+    put:
+      operationId: upsertSessionNotes
+      tags: [notes]
+      summary: Create or update meeting notes for a session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MeetingNotesInput"
+      responses:
+        "200":
+          description: Updated notes
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/MeetingNotes"
+
+  /sessions/{id}/ai-assist:
+    post:
+      operationId: requestAiAssist
+      tags: [ai]
+      summary: Request AI assistance for current conversation context
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/AiAssistRequest"
+      responses:
+        "200":
+          description: AI assistance response
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiAssistResponse"
+
+  /sessions/{id}/ai-summary:
+    post:
+      operationId: generateAiSummary
+      tags: [ai]
+      summary: Generate AI summary and action items for session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Generated summary
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/AiSummary"
+
+  /ai/insights:
+    get:
+      operationId: listInsights
+      tags: [ai]
+      summary: List insight mode assists for a session
+      parameters:
+        - name: sessionId
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Insights list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/InsightRow"
+
+  /ai/insights/generate:
+    post:
+      operationId: generateInsight
+      tags: [ai]
+      summary: Generate a new insight for a session
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [sessionId]
+              properties:
+                sessionId:
+                  type: integer
+      responses:
+        "200":
+          description: Generated insight
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InsightRow"
+        "204":
+          description: Session not active, skipped
+
+  /ai/insights/{id}:
+    patch:
+      operationId: updateInsight
+      tags: [ai]
+      summary: Update insight status
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: integer
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [status]
+              properties:
+                status:
+                  type: string
+                  enum: [used, dismissed]
+      responses:
+        "200":
+          description: Updated insight
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/InsightRow"
+
+  /usage/current:
+    get:
+      operationId: getCurrentUsage
+      tags: [usage]
+      summary: Get current usage for the user
+      responses:
+        "200":
+          description: Current usage data
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/UsageData"
+
+  /usage/history:
+    get:
+      operationId: getUsageHistory
+      tags: [usage]
+      summary: Get usage history over time
+      responses:
+        "200":
+          description: Usage history
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/UsageHistoryEntry"
+
+  /research:
+    get:
+      operationId: listResearch
+      tags: [research]
+      summary: List research results for a session
+      parameters:
+        - name: sessionId
+          in: query
+          required: true
+          schema:
+            type: integer
+      responses:
+        "200":
+          description: Research results list
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: "#/components/schemas/ResearchResult"
+        "404":
+          description: Session not found
+
+    post:
+      operationId: createResearch
+      tags: [research]
+      summary: Run a web research query
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateResearchRequest"
+      responses:
+        "201":
+          description: Research result
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ResearchResult"
+        "402":
+          description: Plan limit exceeded or feature gate
+        "404":
+          description: Session not found
+        "503":
+          description: Research provider not configured
+
+components:
+  schemas:
+    HealthStatus:
+      type: object
+      properties:
+        status:
+          type: string
+      required:
+        - status
+
+    AppConfig:
+      type: object
+      required: [stripeAvailable, googleAuthAvailable, appVersion, researchAvailable]
+      properties:
+        stripeAvailable:
+          type: boolean
+        googleAuthAvailable:
+          type: boolean
+        researchAvailable:
+          type: boolean
+        appVersion:
+          type: string
+        devBanner:
+          type: ["string", "null"]
+
+    LoginRequest:
+      type: object
+      required: [username, password]
+      properties:
+        username:
+          type: string
+        password:
+          type: string
+
+    GoogleAuthRequest:
+      type: object
+      required: [idToken]
+      properties:
+        idToken:
+          type: string
+
+    EmailCodeRequest:
+      type: object
+      required: [email]
+      properties:
+        email:
+          type: string
+
+    EmailCodeVerify:
+      type: object
+      required: [email, code]
+      properties:
+        email:
+          type: string
+        code:
+          type: string
+
+    AuthResponse:
+      type: object
+      required: [token, user]
+      properties:
+        token:
+          type: string
+        user:
+          $ref: "#/components/schemas/CurrentUser"
+
+    CurrentUser:
+      type: object
+      required: [id, username, displayName, plan, isAdmin, passwordMustChange, emailLoginEnabled]
+      properties:
+        id:
+          type: integer
+        username:
+          type: string
+        email:
+          type: ["string", "null"]
+        displayName:
+          type: string
+        plan:
+          type: string
+        isAdmin:
+          type: boolean
+        passwordMustChange:
+          type: boolean
+        googleSub:
+          type: ["string", "null"]
+        googleAvatar:
+          type: ["string", "null"]
+        emailLoginEnabled:
+          type: boolean
+        lastLoginAt:
+          type: ["string", "null"]
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+
+    PasswordChangeRequest:
+      type: object
+      required: [newPassword]
+      properties:
+        currentPassword:
+          type: string
+        newPassword:
+          type: string
+          minLength: 12
+        confirmPassword:
+          type: string
+
+    AccountSession:
+      type: object
+      required: [jti, createdAt, lastSeenAt, isCurrent]
+      properties:
+        jti:
+          type: string
+        deviceLabel:
+          type: ["string", "null"]
+        ip:
+          type: ["string", "null"]
+        uaLabel:
+          type: ["string", "null"]
+        lastSeenAt:
+          type: string
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        isCurrent:
+          type: boolean
+
+    SecurityEventRow:
+      type: object
+      required: [id, type, createdAt]
+      properties:
+        id:
+          type: integer
+        userId:
+          type: ["integer", "null"]
+        type:
+          type: string
+        ip:
+          type: ["string", "null"]
+        uaLabel:
+          type: ["string", "null"]
+        meta:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+          format: date-time
+
+    ActivationCodeRow:
+      type: object
+      required: [id, code, plan, durationDays, createdAt]
+      properties:
+        id:
+          type: integer
+        code:
+          type: string
+        plan:
+          type: string
+        durationDays:
+          type: integer
+        redeemedBy:
+          type: ["integer", "null"]
+        redeemedAt:
+          type: ["string", "null"]
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+
+    AdminUserRow:
+      type: object
+      required: [id, username, displayName, plan, createdAt]
+      properties:
+        id:
+          type: integer
+        username:
+          type: string
+        email:
+          type: ["string", "null"]
+        displayName:
+          type: string
+        plan:
+          type: string
+        planExpiresAt:
+          type: ["string", "null"]
+          format: date-time
+        lastLoginAt:
+          type: ["string", "null"]
+          format: date-time
+        lastLoginIp:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+          format: date-time
+        lockoutStatus:
+          type: ["string", "null"]
+        activeSessions:
+          type: integer
+
+    InsightRow:
+      type: object
+      required: [id, sessionId, category, suggestion, status, createdAt]
+      properties:
+        id:
+          type: integer
+        sessionId:
+          type: integer
+        category:
+          type: string
+          enum: [opportunity, risk, connection, question]
+        suggestion:
+          type: string
+        status:
+          type: string
+          enum: [new, used, dismissed]
+        createdAt:
+          type: string
+          format: date-time
+
+    Session:
+      type: object
+      required: [id, title, status, durationSeconds, speakerCount, createdAt, updatedAt]
+      properties:
+        id:
+          type: integer
+        userId:
+          type: ["integer", "null"]
+        title:
+          type: string
+        status:
+          type: string
+          enum: [active, idle, ended, paused]
+        mode:
+          type: ["string", "null"]
+          enum: [copilot, insight, notes, null]
+        durationSeconds:
+          type: integer
+        speakerCount:
+          type: integer
+        transcriptCount:
+          type: integer
+        summary:
+          type: ["string", "null"]
+        lastHeartbeatAt:
+          type: ["string", "null"]
+          format: date-time
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        endedAt:
+          type: ["string", "null"]
+          format: date-time
+
+    SessionInput:
+      type: object
+      required: [title]
+      properties:
+        title:
+          type: string
+          minLength: 1
+        mode:
+          type: string
+          enum: [copilot, insight, notes]
+
+    SessionUpdate:
+      type: object
+      properties:
+        title:
+          type: string
+          minLength: 1
+        status:
+          type: string
+          enum: [active, idle, ended, paused]
+        mode:
+          type: string
+          enum: [copilot, insight, notes]
+        durationSeconds:
+          type: integer
+        speakerCount:
+          type: integer
+        summary:
+          type: string
+
+    SessionPreview:
+      type: object
+      required: [id, title, status, durationSeconds, transcriptCount, createdAt]
+      properties:
+        id:
+          type: integer
+        title:
+          type: string
+        status:
+          type: string
+          enum: [active, idle, ended, paused]
+        mode:
+          type: ["string", "null"]
+          enum: [copilot, insight, notes, null]
+        durationSeconds:
+          type: integer
+        transcriptCount:
+          type: integer
+        lastLine:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+          format: date-time
+
+    SessionStats:
+      type: object
+      required: [totalSessions, activeSessions, totalMinutes, totalAiRequests, avgDurationMinutes, topSpeakers]
+      properties:
+        totalSessions:
+          type: integer
+        activeSessions:
+          type: integer
+        totalMinutes:
+          type: integer
+        totalAiRequests:
+          type: integer
+        avgDurationMinutes:
+          type: number
+        topSpeakers:
+          type: array
+          items:
+            type: string
+
+    TranscriptEntry:
+      type: object
+      required: [id, sessionId, speakerLabel, text, startMs, createdAt]
+      properties:
+        id:
+          type: integer
+        sessionId:
+          type: integer
+        speakerLabel:
+          type: string
+        text:
+          type: string
+        startMs:
+          type: integer
+        endMs:
+          type: ["integer", "null"]
+        confidence:
+          type: ["number", "null"]
+        createdAt:
+          type: string
+          format: date-time
+
+    TranscriptInput:
+      type: object
+      required: [speakerLabel, text, startMs]
+      properties:
+        speakerLabel:
+          type: string
+        text:
+          type: string
+        startMs:
+          type: integer
+        endMs:
+          type: integer
+        confidence:
+          type: number
+
+    MeetingNotes:
+      type: object
+      required: [id, sessionId, summary, actionItems, decisions, openQuestions, keyInsights, updatedAt]
+      properties:
+        id:
+          type: integer
+        sessionId:
+          type: integer
+        summary:
+          type: string
+        actionItems:
+          type: array
+          items:
+            type: string
+        decisions:
+          type: array
+          items:
+            type: string
+        openQuestions:
+          type: array
+          items:
+            type: string
+        keyInsights:
+          type: array
+          items:
+            type: string
+        updatedAt:
+          type: string
+          format: date-time
+
+    MeetingNotesInput:
+      type: object
+      properties:
+        summary:
+          type: string
+        actionItems:
+          type: array
+          items:
+            type: string
+        decisions:
+          type: array
+          items:
+            type: string
+        openQuestions:
+          type: array
+          items:
+            type: string
+        keyInsights:
+          type: array
+          items:
+            type: string
+
+    AiAssistRequest:
+      type: object
+      required: [mode]
+      properties:
+        mode:
+          type: string
+          enum: [objection, answer, explain, logic_check]
+        context:
+          type: string
+        question:
+          type: string
+
+    AiAssistResponse:
+      type: object
+      required: [id, sessionId, mode, suggestion, createdAt]
+      properties:
+        id:
+          type: integer
+        sessionId:
+          type: integer
+        mode:
+          type: string
+        suggestion:
+          type: string
+        reasoning:
+          type: ["string", "null"]
+        createdAt:
+          type: string
+          format: date-time
+
+    AiSummary:
+      type: object
+      required: [summary, actionItems, decisions, openQuestions, keyInsights]
+      properties:
+        summary:
+          type: string
+        actionItems:
+          type: array
+          items:
+            type: string
+        decisions:
+          type: array
+          items:
+            type: string
+        openQuestions:
+          type: array
+          items:
+            type: string
+        keyInsights:
+          type: array
+          items:
+            type: string
+
+    UsageData:
+      type: object
+      required: [planName, audioMinutesUsed, audioMinutesLimit, aiRequestsUsed, aiRequestsLimit, billingPeriodEnd]
+      properties:
+        planName:
+          type: string
+          enum: [free, pro, business, admin]
+        audioMinutesUsed:
+          type: integer
+        audioMinutesLimit:
+          type: integer
+        aiRequestsUsed:
+          type: integer
+        aiRequestsLimit:
+          type: integer
+        billingPeriodEnd:
+          type: string
+          format: date-time
+
+    UsageHistoryEntry:
+      type: object
+      required: [date, audioMinutes, aiRequests]
+      properties:
+        date:
+          type: string
+          format: date
+        audioMinutes:
+          type: integer
+        aiRequests:
+          type: integer
+
+    ResearchSource:
+      type: object
+      required: [title, url, snippet]
+      properties:
+        title:
+          type: string
+        url:
+          type: string
+        snippet:
+          type: string
+
+    ResearchResult:
+      type: object
+      required: [id, sessionId, query, answer, sources, trigger, createdAt]
+      properties:
+        id:
+          type: integer
+        sessionId:
+          type: integer
+        query:
+          type: string
+        answer:
+          type: string
+        sources:
+          type: array
+          items:
+            $ref: "#/components/schemas/ResearchSource"
+        trigger:
+          type: string
+          enum: [manual, auto]
+        createdAt:
+          type: string
+          format: date-time
+
+    CreateResearchRequest:
+      type: object
+      required: [sessionId]
+      properties:
+        sessionId:
+          type: integer
+        query:
+          type: string
+        trigger:
+          type: string
+          enum: [manual, auto]
+          default: manual

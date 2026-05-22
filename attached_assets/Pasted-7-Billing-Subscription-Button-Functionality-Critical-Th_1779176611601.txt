@@ -1,0 +1,229 @@
+7. Billing, Subscription & Button Functionality – Critical
+
+The app must not contain fake or dead buttons.
+
+All important buttons must work.
+
+No placeholder actions.
+
+Every interactive element must trigger correct behavior.
+
+Upgrade to Pro
+
+The "Upgrade to Pro" button must work.
+
+Requirements:
+
+open subscription flow
+display plans clearly
+allow payment completion
+confirm successful upgrade
+immediately update account status
+
+No placeholder flow.
+
+Manage Billing
+
+The "Manage Billing" button must work.
+
+Users should be able to:
+
+view subscription
+manage payment methods
+cancel subscription
+renew/reactivate
+view billing status
+manage invoices if supported
+
+Implement real billing management.
+
+Payment Processing
+
+Users must be able to pay.
+
+Production-ready payment system.
+
+Support:
+
+MOBILE
+
+Apple In-App Purchase
+Google Play Billing
+
+WEB
+
+credit card
+PayPal
+secure checkout
+
+Handle:
+
+payment success
+payment failure
+pending payment
+cancellation
+subscription sync
+webhook handling
+entitlement updates
+
+Prevent broken billing states.
+
+Contact Sales
+
+The "Contact Sales" button must work.
+
+When pressed:
+
+open email compose
+open default mail client
+prefill recipient
+prefill useful subject line
+
+Recipient:
+
+cashchash187@gmail.com
+
+Example subject:
+
+PowerFlow Business Inquiry
+
+Must work on:
+
+iOS
+Android
+Web
+
+Use mailto fallback if necessary.
+
+Global Button Audit
+
+Audit ALL buttons.
+
+Examples:
+
+Upgrade to Pro
+Manage Billing
+Contact Sales
+Export PDF
+Notes
+AI Assist
+Settings
+Login
+Logout
+Save
+Export
+Navigation
+all other clickable UI
+
+Requirements:
+
+clickable
+responsive
+loading states
+error handling
+no broken actions
+no fake UI
+
+Buttons must never appear interactive while doing nothing.
+
+8. Cross-Platform + Deployment Readiness – Critical
+
+PowerFlow already exists.
+
+Do NOT rebuild from scratch.
+
+Make the existing app production-ready and fully cross-platform.
+
+The app must work properly on:
+
+mobile browser
+desktop browser
+iPhone
+Android phones
+
+Prepare the app for:
+
+Apple App Store deployment
+Google Play Store deployment
+Web deployment
+
+This must not remain a future task.
+
+Requirements:
+
+WEB
+
+responsive browser version
+mobile browser optimized
+desktop compatible
+stable performance
+responsive UI
+
+IOS
+
+App Store ready
+proper microphone permission handling
+production build readiness
+native-safe behavior where necessary
+
+ANDROID
+
+Google Play ready
+proper permissions
+microphone handling
+production build readiness
+
+Review and fix anything preventing release.
+
+Include:
+
+platform compatibility
+permission flows
+environment configuration
+build readiness
+production configuration
+release readiness
+
+If using React Native / Expo or similar:
+
+ensure:
+
+iOS build works
+Android build works
+Web build works
+
+No platform should feel secondary.
+
+Overall Goal Update
+
+PowerFlow should feel:
+
+reliable
+intelligent
+always listening
+premium
+trustworthy
+production-ready
+cross-platform
+deployable
+
+Prioritize:
+
+transcription reliability
+data safety
+button/payment functionality
+cross-platform readiness
+usability
+AI quality
+polished output
+
+Fix root causes, not symptoms.
+
+Improve architecture where necessary.
+
+Make the app genuinely ready for:
+
+Web
+mobile browser
+Apple App Store
+Google Play Store
