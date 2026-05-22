@@ -7,14 +7,18 @@ import {
   meetingNotesTable,
   sessionsTable,
   usageTable,
+  researchResultsTable,
 } from "@workspace/db";
 import {
   RequestAiAssistParams,
   RequestAiAssistBody,
   GenerateAiSummaryParams,
 } from "@workspace/api-zod";
-import { openai } from "@workspace/integrations-openai-ai-server";
+import { openai, LLM_MODEL, llmConfigured } from "@workspace/integrations-openai-ai-server";
 import { getOrCreateUsage } from "../lib/usage-helpers";
+import { generateInsight } from "../lib/insight-engine";
+import { isResearchAvailable, research } from "../lib/research-provider";
+import { getPlanLimits } from "../lib/plans";
 
 const router: IRouter = Router();
 
@@ -44,8 +48,8 @@ async function buildRollingContext(sessionId: number): Promise<string> {
     const olderRaw = older.map((t) => `${t.speaker}: ${t.text}`).join("\n");
     try {
       const summary = await openai.chat.completions.create({
-        model: "gpt-5.4",
-        max_completion_tokens: 300,
+        model: LLM_MODEL,
+        max_tokens: 300,
         messages: [
           { role: "system", content: "Summarise the following conversation excerpt in 2-4 sentences. Be factual and concise. Preserve key decisions, facts, and names." },
           { role: "user", content: olderRaw },
@@ -117,6 +121,11 @@ router.post("/sessions/:id/ai-assist", async (req, res): Promise<void> => {
   const session = await getOwnedSession(params.data.id, user.id, user.isAdmin);
   if (!session) { res.status(404).json({ error: "Session not found" }); return; }
 
+  if (!llmConfigured) {
+    res.status(503).json({ error: "ai_not_configured", message: "AI is not configured. Set LLM_API_KEY on the server." });
+    return;
+  }
+
   if (!user.isAdmin && user.plan !== "admin") {
     const limitCheck = await checkAiLimit(user.id, user.plan);
     if (!limitCheck.allowed) {
@@ -132,17 +141,25 @@ router.post("/sessions/:id/ai-assist", async (req, res): Promise<void> => {
   let suggestion: string;
   try {
     const completion = await openai.chat.completions.create({
-      model: "gpt-5.4",
-      max_completion_tokens: 200,
+      model: LLM_MODEL,
+      max_tokens: 200,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: `Here is the conversation so far:\n\n${context}\n\nGenerate your response now.` },
       ],
     });
-    suggestion = completion.choices[0]?.message?.content?.trim() || "Unable to generate a response at this time.";
-  } catch (err) {
-    req.log.error({ err }, "OpenAI request failed");
-    suggestion = "AI is temporarily unavailable. Please try again in a moment.";
+    suggestion = completion.choices[0]?.message?.content?.trim() || "";
+    if (!suggestion) throw new Error("Empty completion from LLM");
+  } catch (err: any) {
+    // Surface the REAL error instead of swallowing it as a fake 200.
+    const status = err?.status ?? err?.response?.status;
+    const detail = err?.error?.message ?? err?.message ?? "Unknown LLM error";
+    req.log.error({ err, status, model: LLM_MODEL }, "AI assist LLM request failed");
+    res.status(502).json({
+      error: "ai_provider_error",
+      message: `LLM request failed (model ${LLM_MODEL}${status ? `, status ${status}` : ""}): ${detail}`,
+    });
+    return;
   }
 
   if (!user.isAdmin && user.plan !== "admin") {
@@ -182,14 +199,20 @@ router.post("/sessions/:id/ai-summary", async (req, res): Promise<void> => {
     return;
   }
 
+  if (!llmConfigured) {
+    res.status(503).json({ error: "ai_not_configured", message: "AI is not configured. Set LLM_API_KEY on the server." });
+    return;
+  }
+
   const fullTranscript = transcripts.map((t) => `${t.speakerLabel}: ${t.text}`).join("\n");
 
   let notes: { summary: string; actionItems: string[]; decisions: string[]; openQuestions: string[]; keyInsights: string[] };
 
   try {
     const completion = await openai.chat.completions.create({
-      model: "gpt-5.4",
-      max_completion_tokens: 800,
+      model: LLM_MODEL,
+      max_tokens: 800,
+      response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
@@ -200,13 +223,14 @@ router.post("/sessions/:id/ai-summary", async (req, res): Promise<void> => {
 - openQuestions: string[] (each is an unanswered question, max 4)
 - keyInsights: string[] (each is a key observation or takeaway, max 4)
 
-Be specific to the content. No generic placeholders.`,
+Respond in the same language as the transcript. Be specific to the content. No generic placeholders.`,
         },
         { role: "user", content: `Meeting transcript:\n\n${fullTranscript}` },
       ],
     });
     const raw = completion.choices[0]?.message?.content?.trim() || "{}";
-    const parsed = JSON.parse(raw);
+    const cleaned = raw.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+    const parsed = JSON.parse(cleaned);
     notes = {
       summary: parsed.summary ?? "",
       actionItems: Array.isArray(parsed.actionItems) ? parsed.actionItems : [],
@@ -214,9 +238,15 @@ Be specific to the content. No generic placeholders.`,
       openQuestions: Array.isArray(parsed.openQuestions) ? parsed.openQuestions : [],
       keyInsights: Array.isArray(parsed.keyInsights) ? parsed.keyInsights : [],
     };
-  } catch (err) {
-    req.log.error({ err }, "OpenAI summary failed");
-    notes = { summary: "Summary generation failed. Please try again.", actionItems: [], decisions: [], openQuestions: [], keyInsights: [] };
+  } catch (err: any) {
+    const status = err?.status ?? err?.response?.status;
+    const detail = err?.error?.message ?? err?.message ?? "Unknown LLM error";
+    req.log.error({ err, status, model: LLM_MODEL }, "AI summary LLM request failed");
+    res.status(502).json({
+      error: "ai_provider_error",
+      message: `LLM summary failed (model ${LLM_MODEL}${status ? `, status ${status}` : ""}): ${detail}`,
+    });
+    return;
   }
 
   const existing = await db.select().from(meetingNotesTable).where(eq(meetingNotesTable.sessionId, params.data.id));
@@ -257,26 +287,47 @@ router.post("/ai/insights/generate", async (req, res): Promise<void> => {
   const session = await getOwnedSession(Number(sessionId), req.user!.id, req.user!.isAdmin);
   if (!session || session.status !== "active") { res.status(204).end(); return; }
 
-  const { pickScoredInsight } = await import("../lib/insight-pool");
-
   const recentRows = await db
     .select({ text: transcriptsTable.text })
     .from(transcriptsTable)
     .where(eq(transcriptsTable.sessionId, Number(sessionId)))
     .orderBy(desc(transcriptsTable.startMs))
-    .limit(20);
+    .limit(25);
 
-  const recentText = recentRows.map((r) => r.text).reverse().join(" ").slice(-600);
-  const insight = pickScoredInsight(recentText, new Set());
+  const recentText = recentRows.map((r) => r.text).reverse().join(" ").slice(-800);
+
+  const insight = await generateInsight(recentText);
   if (!insight) { res.status(204).end(); return; }
 
   const [row] = await db.insert(aiAssistsTable).values({
     sessionId: Number(sessionId),
     mode: "insight",
-    suggestion: insight.text,
+    suggestion: insight.tip,
     category: insight.category,
     status: "new",
   }).returning();
+
+  // Best-effort auto-research when flagged and the user's plan allows it
+  if (insight.needsResearch && insight.researchQuery && isResearchAvailable()) {
+    const user = req.user!;
+    const limits = getPlanLimits(user.plan);
+    if (user.isAdmin || limits.researchRequests > 0) {
+      try {
+        const result = await research(insight.researchQuery);
+        await db.insert(researchResultsTable).values({
+          sessionId: Number(sessionId),
+          userId: user.id,
+          query: insight.researchQuery,
+          answer: result.answer,
+          sources: result.sources as unknown as Record<string, unknown>[],
+          trigger: "auto",
+          status: "ok",
+        });
+      } catch (err) {
+        req.log.error({ err }, "Insight auto-research failed");
+      }
+    }
+  }
 
   res.json({
     id: row.id, sessionId: row.sessionId, category: row.category,

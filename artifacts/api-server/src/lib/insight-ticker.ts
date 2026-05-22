@@ -1,14 +1,16 @@
 import { db } from "@workspace/db";
-import { sessionsTable, transcriptsTable, aiAssistsTable } from "@workspace/db";
+import { sessionsTable, transcriptsTable, aiAssistsTable, usersTable, researchResultsTable } from "@workspace/db";
 import { eq, and, sql, desc } from "drizzle-orm";
-import { pickScoredInsight } from "./insight-pool";
+import { generateInsight } from "./insight-engine";
+import { isResearchAvailable, research } from "./research-provider";
+import { getPlanLimits } from "./plans";
 import { logger } from "./logger";
 
 const TICK_INTERVAL_MS = 10_000;        // check every 10s
-const MIN_CHARS_SINCE_LAST = 150;       // ≥150 new chars of speech required
-const MIN_SECONDS_SINCE_LAST = 25;      // ≥25s between insights
+const MIN_CHARS_SINCE_LAST = 150;       // >=150 new chars of speech required
+const MIN_SECONDS_SINCE_LAST = 25;      // >=25s between insights (also protects free-tier LLM quota)
 const HEARTBEAT_STALE_MS = 60_000;      // session considered idle if hb > 60s ago
-const RECENT_TRANSCRIPT_CHARS = 600;    // chars to pull for content-scoring
+const RECENT_TRANSCRIPT_CHARS = 800;    // chars of recent speech to send to the LLM
 
 const LOG_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -17,11 +19,12 @@ interface TickerEntry {
   lastSessionId: number;
   lastInsightAt: number;
   charCountAtLastInsight: number;
-  shownInsightIds: Set<string>;
+  lastResearchAt: number;
 }
 
 const tickers = new Map<number, TickerEntry>();
 const MAX_TICKERS = 500;
+const MIN_SECONDS_BETWEEN_RESEARCH = 90; // auto-research cooldown per user
 
 setInterval(() => {
   logger.info({ tickerCount: tickers.size }, "[INSIGHT-TICKER] Active tickers");
@@ -31,11 +34,10 @@ export function startInsightTicker(userId: number, sessionId: number) {
   if (tickers.has(userId)) {
     const entry = tickers.get(userId)!;
     if (entry.lastSessionId !== sessionId) {
-      // New session — reset per-session tracking
       entry.lastSessionId = sessionId;
       entry.lastInsightAt = 0;
       entry.charCountAtLastInsight = 0;
-      entry.shownInsightIds = new Set();
+      entry.lastResearchAt = 0;
     }
     return;
   }
@@ -50,7 +52,7 @@ export function startInsightTicker(userId: number, sessionId: number) {
     lastSessionId: sessionId,
     lastInsightAt: 0,
     charCountAtLastInsight: 0,
-    shownInsightIds: new Set(),
+    lastResearchAt: 0,
   };
 
   const interval = setInterval(async () => {
@@ -82,7 +84,7 @@ export function startInsightTicker(userId: number, sessionId: number) {
         tickEntry.lastSessionId = session.id;
         tickEntry.lastInsightAt = 0;
         tickEntry.charCountAtLastInsight = 0;
-        tickEntry.shownInsightIds = new Set();
+        tickEntry.lastResearchAt = 0;
       }
 
       // 2. Gate: recent heartbeat (< 60s ago)
@@ -105,39 +107,66 @@ export function startInsightTicker(userId: number, sessionId: number) {
       const newChars = currentCharCount - tickEntry.charCountAtLastInsight;
       if (newChars < MIN_CHARS_SINCE_LAST) return;
 
-      // 5. Pull recent transcript for content scoring
+      // 5. Pull recent transcript for the LLM
       const recentRows = await db
         .select({ text: transcriptsTable.text })
         .from(transcriptsTable)
         .where(eq(transcriptsTable.sessionId, session.id))
         .orderBy(desc(transcriptsTable.startMs))
-        .limit(20);
+        .limit(25);
 
-      let recentText = recentRows
-        .map((r) => r.text)
-        .reverse()
-        .join(" ");
+      let recentText = recentRows.map((r) => r.text).reverse().join(" ");
       if (recentText.length > RECENT_TRANSCRIPT_CHARS) {
         recentText = recentText.slice(-RECENT_TRANSCRIPT_CHARS);
       }
 
-      // 6. Content-score and pick insight (null = nothing relevant → emit nothing)
-      const insight = pickScoredInsight(recentText, tickEntry.shownInsightIds);
+      // 6. Ask the LLM whether a tip is warranted (null => stay silent)
+      const insight = await generateInsight(recentText);
+
+      // Advance the char baseline even on silence, so we wait for genuinely new
+      // speech before asking again (avoids re-querying the same context).
+      tickEntry.charCountAtLastInsight = currentCharCount;
       if (!insight) return;
 
-      // 7. Insert the insight
+      // 7. Persist the insight
       await db.insert(aiAssistsTable).values({
         sessionId: session.id,
         mode: "insight",
-        suggestion: insight.text,
+        suggestion: insight.tip,
         category: insight.category,
         status: "new",
       });
-
-      // 8. Update tracking state
       tickEntry.lastInsightAt = now;
-      tickEntry.charCountAtLastInsight = currentCharCount;
-      tickEntry.shownInsightIds.add(insight.id);
+
+      // 8. Auto-research when the LLM flagged it as needed
+      if (
+        insight.needsResearch &&
+        insight.researchQuery &&
+        isResearchAvailable() &&
+        now - tickEntry.lastResearchAt >= MIN_SECONDS_BETWEEN_RESEARCH * 1000
+      ) {
+        const [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+        const limits = user ? getPlanLimits(user.plan) : getPlanLimits("free");
+        const researchAllowed = !!user && (user.isAdmin || limits.researchRequests > 0);
+
+        if (researchAllowed) {
+          tickEntry.lastResearchAt = now;
+          try {
+            const result = await research(insight.researchQuery);
+            await db.insert(researchResultsTable).values({
+              sessionId: session.id,
+              userId,
+              query: insight.researchQuery,
+              answer: result.answer,
+              sources: result.sources as unknown as Record<string, unknown>[],
+              trigger: "auto",
+              status: "ok",
+            });
+          } catch (err) {
+            logger.error({ err, userId }, "[INSIGHT-TICKER] Auto-research failed");
+          }
+        }
+      }
     } catch (err) {
       logger.error({ err, userId }, "[INSIGHT-TICKER] Tick error");
     }
