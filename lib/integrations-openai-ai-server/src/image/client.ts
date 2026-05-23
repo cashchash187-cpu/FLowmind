@@ -2,20 +2,29 @@ import fs from "node:fs";
 import OpenAI, { toFile } from "openai";
 import { Buffer } from "node:buffer";
 
+// Same env fallback chain as ../client.ts. We MUST NOT throw at module load
+// — that would crash the api-server at boot when this module is transitively
+// imported from index.ts. Individual calls fail explicitly instead.
 const apiKey =
+  process.env.LLM_API_KEY ||
   process.env.AI_INTEGRATIONS_OPENAI_API_KEY ||
   process.env.OPENAI_API_KEY;
 
+const baseURL =
+  process.env.LLM_BASE_URL ||
+  process.env.AI_INTEGRATIONS_OPENAI_BASE_URL ||
+  undefined;
+
 if (!apiKey) {
-  throw new Error(
-    "No OpenAI API key found. Set OPENAI_API_KEY or provision the OpenAI AI integration.",
+  console.warn(
+    "[LLM/image] No API key configured — image generation will error until LLM_API_KEY is set.",
   );
 }
 
-const clientOptions: ConstructorParameters<typeof OpenAI>[0] = { apiKey };
-if (process.env.AI_INTEGRATIONS_OPENAI_BASE_URL) {
-  clientOptions.baseURL = process.env.AI_INTEGRATIONS_OPENAI_BASE_URL;
-}
+const clientOptions: ConstructorParameters<typeof OpenAI>[0] = {
+  apiKey: apiKey ?? "missing-key",
+};
+if (baseURL) clientOptions.baseURL = baseURL;
 
 export const openai = new OpenAI(clientOptions);
 
