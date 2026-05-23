@@ -24,12 +24,13 @@ export const deepgramProvider: SttProvider = {
     if (!apiKey) throw new Error("DEEPGRAM_API_KEY not set");
 
     const lang = normalizeLang(opts.language);
-    const isAuto = lang === "multi";
 
     // nova-3 is Deepgram's current multilingual model — covers en/de/es/fr/
     // it/pt/nl/ja/hi/ru with proper code-switching. nova-2 multi is en+es
     // only, which is why this server used to silently force English for
-    // German speakers.
+    // German speakers. `language=multi` alone enables the multilingual model;
+    // the `detect_language` query param is REST-only and rejected here with
+    // a 400, so we don't send it.
     const params = new URLSearchParams({
       model: "nova-3",
       language: lang,
@@ -41,8 +42,6 @@ export const deepgramProvider: SttProvider = {
       endpointing: "900",
       utterance_end_ms: "1500",
     });
-    // detect_language only valid alongside language=multi
-    if (isAuto) params.set("detect_language", "true");
 
     const url = `${DEEPGRAM_WS_URL}?${params}`;
     const ws = new WebSocket(url, {
