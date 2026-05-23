@@ -244,20 +244,18 @@ export default function SessionLive() {
     reasoning?: string | null;
   } | null>(null);
   const [aiLimitExceeded, setAiLimitExceeded] = useState(false);
-  // The mobile insight Sheet defaults to open in insight mode so users
-  // don't have to hunt for a toggle. Desktop always renders the side
-  // column independently of this state.
-  const [insightPanelOpen, setInsightPanelOpen] = useState(true);
+  // Insights are now always visible in insight mode (no toggle), so this
+  // state only exists for back-compat with any leftover references.
+  const [insightPanelOpen] = useState(true);
   const [resumeModalOpen, setResumeModalOpen] = useState(false);
 
   // Research panel state
   const [researchPanelOpen, setResearchPanelOpen] = useState(false);
   const [researchResults, setResearchResults] = useState<ResearchResultData[]>([]);
 
-  // Auto-research toggle (insight mode, Pro+, default OFF)
-  const [autoResearch, setAutoResearch] = useState(false);
-  const lastAutoResearchRef = useRef<number>(0);
-  const AUTO_RESEARCH_COOLDOWN = 90_000; // 90s
+  // Auto-research is now driven entirely server-side by the insight engine
+  // — no client-side toggle or loop. These stubs stay only because other
+  // code still references the names (they get stripped on the next pass).
 
   // Heartbeat — ping server every 30s while mic is running
   const heartbeat = useMutation({
@@ -280,7 +278,6 @@ export default function SessionLive() {
   const scrollBottomRef = useRef<HTMLDivElement>(null);
   const notesTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const autoResearchTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
     scrollBottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -397,42 +394,10 @@ export default function SessionLive() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [speech.isListening, session?.status]);
 
-  // Auto-research — insight mode, Pro+, opt-in, max 1/90s, only with new speech
-  const lastTranscriptCountRef = useRef(0);
-  useEffect(() => {
-    if (!isInsightMode || !autoResearch || !canResearch || !researchAvailable) return;
-    if (!speech.isListening || session?.status !== "active") return;
-
-    autoResearchTimerRef.current = setInterval(async () => {
-      const currentCount = allTranscripts.length;
-      const hasNewSpeech = currentCount > lastTranscriptCountRef.current;
-      const cooldownOk = Date.now() - lastAutoResearchRef.current >= AUTO_RESEARCH_COOLDOWN;
-
-      if (!hasNewSpeech || !cooldownOk) return;
-
-      lastTranscriptCountRef.current = currentCount;
-      lastAutoResearchRef.current = Date.now();
-
-      try {
-        const res = await apiFetch("/api/research", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ sessionId, trigger: "auto" }),
-        });
-        if (res.ok) {
-          const result: ResearchResultData = await res.json();
-          setResearchResults((prev) => [result, ...prev]);
-        }
-      } catch {
-        // Silent — auto-research is best-effort
-      }
-    }, AUTO_RESEARCH_COOLDOWN);
-
-    return () => {
-      if (autoResearchTimerRef.current) clearInterval(autoResearchTimerRef.current);
-    };
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isInsightMode, autoResearch, canResearch, researchAvailable, speech.isListening, session?.status, sessionId]);
+  // Auto-research is now handled entirely server-side by the insight ticker
+  // (agentic flow: decide → research → synthesize). No client loop required —
+  // the React Query subscription on the research panel picks up new rows
+  // automatically.
 
   // Show resume modal when session goes idle
   useEffect(() => {
@@ -711,43 +676,19 @@ export default function SessionLive() {
             </Tooltip>
           )}
 
-          {/* Auto-research toggle — insight mode, Pro+ only */}
-          {isInsightMode && researchAvailable && canResearch && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="sm"
-                  className={`gap-1 h-8 px-2 text-xs ${autoResearch ? "text-primary" : "text-muted-foreground"}`}
-                  onClick={() => setAutoResearch((v) => !v)}
-                  data-testid="button-auto-research-toggle"
-                >
-                  {autoResearch ? (
-                    <ToggleRight className="h-4 w-4" />
-                  ) : (
-                    <ToggleLeft className="h-4 w-4" />
-                  )}
-                  <span className="hidden sm:inline">Auto</span>
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="text-xs">
-                {autoResearch ? "Auto-research ON — fires every 90s on new speech" : "Auto-research OFF"}
-              </TooltipContent>
-            </Tooltip>
-          )}
+          {/* Auto-research toggle removed — the server-side insight engine
+              now decides on its own when to fire a lookup (agentic flow).
+              The client-side toggle never worked reliably and confused users. */}
 
-          {isInsightMode && (
+          {/* Insight toggle removed — the panel is always visible in insight
+              mode (mobile = bottom dock, desktop = right column). */}
+          {false && isInsightMode && (
             <Button
-              variant={insightPanelOpen ? "secondary" : "ghost"}
               size="sm"
-              // Desktop already shows the insight column permanently, so the
-              // toggle is only useful on mobile (where it opens the bottom Sheet).
-              className="gap-2 md:hidden"
-              onClick={() => setInsightPanelOpen((v) => !v)}
+              className="gap-2"
               data-testid="button-insight-panel"
             >
               <PanelRight className="h-4 w-4" />
-              <span className="hidden sm:inline text-xs">Insights</span>
             </Button>
           )}
 
@@ -808,9 +749,11 @@ export default function SessionLive() {
         </div>
       )}
 
-      {/* Main scroll area */}
-      <div className="flex-1 flex overflow-hidden relative">
-        <div className="flex-1 flex overflow-hidden">
+      {/* Main scroll area — flex-col on mobile so the insight dock can sit
+          below the transcript without a modal backdrop. Switches back to
+          flex-row on md+ where the insight panel is a side column. */}
+      <div className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
+        <div className="flex-1 flex overflow-hidden min-h-0">
           <div className="flex-1 flex flex-col overflow-hidden">
             <ScrollArea className="flex-1 px-4 sm:px-6 py-4">
               <div className="max-w-3xl mx-auto space-y-3 pb-44">
@@ -978,26 +921,21 @@ export default function SessionLive() {
           )}
         </div>
 
-        {/* Insight stream side panel */}
-        {/* Insight panel — ALWAYS visible in insight mode, no toggle needed.
-            On desktop it lives as a permanent right-hand column; on mobile
-            it slides up as a bottom drawer that's open by default. */}
+        {/* Insight panel — ALWAYS visible in insight mode. Desktop: permanent
+            right-hand column. Mobile: docked bottom column, in-flow (NOT a
+            modal Sheet — the dark backdrop was covering the transcript and
+            confusing users on session start). The Sheet toggle button is
+            hidden on desktop too. */}
         {isInsightMode && (
           <>
+            {/* Desktop side column */}
             <div className="hidden md:flex flex-col w-80 lg:w-96 border-l border-border/40 bg-card/50 backdrop-blur overflow-y-auto p-4 shrink-0">
               <InsightStream sessionId={sessionId} />
             </div>
-            <Sheet open={insightPanelOpen} onOpenChange={setInsightPanelOpen}>
-              <SheetContent
-                side="bottom"
-                className="md:hidden h-[55vh] p-0 border-t border-primary/20 bg-card/95 backdrop-blur-xl rounded-t-2xl"
-              >
-                <SheetTitle className="sr-only">Insight Stream</SheetTitle>
-                <div className="h-full overflow-y-auto p-4">
-                  <InsightStream sessionId={sessionId} />
-                </div>
-              </SheetContent>
-            </Sheet>
+            {/* Mobile bottom dock — in normal flow, no backdrop */}
+            <div className="md:hidden flex-none h-[45vh] border-t border-border/40 bg-card/60 backdrop-blur overflow-y-auto p-3">
+              <InsightStream sessionId={sessionId} />
+            </div>
           </>
         )}
 

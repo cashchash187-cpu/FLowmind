@@ -3,87 +3,102 @@ import { logger } from "./logger";
 
 export type InsightCategory = "opportunity" | "risk" | "connection" | "question";
 
-export interface GeneratedInsight {
-  tip: string;
-  category: InsightCategory;
+/** Outcome of the first pass: decide if we should speak and whether we need facts. */
+export interface InsightDecision {
+  /** If false: stay silent this tick. */
+  shouldFire: boolean;
+  /** If true, caller should call the research API with researchQuery and then synthesizeInsight(). */
   needsResearch: boolean;
   researchQuery: string | null;
+  /** Ready-to-show tip when no research is needed. */
+  tip: string | null;
+  category: InsightCategory;
+}
+
+/** Outcome of the second pass when research was requested + completed. */
+export interface InsightSynthesis {
+  tip: string;
+  category: InsightCategory;
+}
+
+export interface ResearchSourceLite {
+  title: string;
+  url: string;
+  snippet: string;
 }
 
 const VALID_CATEGORIES: InsightCategory[] = ["opportunity", "risk", "connection", "question"];
 
-const SYSTEM_PROMPT = `You are an experienced strategic advisor sitting next to the listener during a LIVE business conversation. The text below is the most recent transcript. Your job is to whisper ONE short, useful insight ONLY when you genuinely have something valuable to add — like a sharp colleague who only speaks up when it matters.
+// ─── Pass 1: decide ─────────────────────────────────────────────────────────
 
-WHEN TO SPEAK UP (return a tip):
-- A specific opportunity is being missed or could be expanded (e.g. "they just mentioned X budget — ask about Y").
-- A risk or weakness is visible in what was just said (e.g. an unsupported claim, a contradiction, a vague commitment).
-- A useful connection to something said earlier in this same conversation that the listener might forget.
-- A sharp, specific question worth asking right now to advance the discussion.
-- A factual gap where a quick web lookup would clearly help (then set needsResearch: true).
+const DECIDE_PROMPT = `You are an experienced strategic advisor sitting next to a listener in a LIVE business conversation. Your job is to whisper insights ONLY when they add real value — like a sharp colleague who only speaks up when it matters. You have a research tool available; when concrete facts (numbers, names, companies, regulations) would help, you flag them for lookup instead of bluffing.
 
-WHEN TO STAY SILENT (return null tip):
-- The conversation is just exchanging pleasantries or basic context.
-- Nothing concrete or actionable has been said recently.
-- Your tip would be generic ("consider their needs", "build rapport") — that's noise.
-- You're not sure whether the tip adds real value — default to silence.
+Decide whether to speak up RIGHT NOW based on the most recent transcript.
 
-Output ONLY a JSON object, no markdown, no code fences, exactly these keys:
+WHEN TO SPEAK UP:
+- A specific opportunity is being missed (e.g. they mentioned a budget — suggest a related angle).
+- A risk or weakness is visible (an unsupported claim, contradiction, vague commitment).
+- A useful callback to something said earlier in this same conversation.
+- A sharp, specific question worth asking right now.
+- A factual gap where data would clearly help. In that case set needsResearch=true and DON'T write the tip yourself — research will be fetched and the tip composed in a second step.
+
+WHEN TO STAY SILENT (return shouldFire=false):
+- Just pleasantries or basic context.
+- Nothing concrete or actionable has been said.
+- Your tip would be generic ("consider their needs", "build rapport").
+- You're not sure it adds value.
+
+Output ONLY this JSON object (no markdown, no code fences):
 {
-  "tip": string | null,             // the whispered tip, in the SAME language as the transcript
-  "category": "opportunity" | "risk" | "connection" | "question",
-  "needsResearch": boolean,         // true ONLY for concrete factual gaps a quick web lookup would clarify
-  "researchQuery": string | null    // concise (max 12 words) web search query if needsResearch, else null
+  "shouldFire": boolean,
+  "needsResearch": boolean,
+  "researchQuery": string | null,   // concise web query (max 12 words) when needsResearch
+  "tip": string | null,             // ONLY when needsResearch=false; otherwise null
+  "category": "opportunity" | "risk" | "connection" | "question"
 }
 
-Hard rules:
-- Tip is at most 30 words, specific, concrete, actionable.
-- Language MUST match the transcript exactly (German transcript -> German tip; English -> English).
-- Never invent facts. If you're guessing, return null.
-- needsResearch SHOULD fire often — any time a specific company, product, person, regulation, market number, technical concept, or industry-specific term comes up that the listener probably can't recall on the fly. Better to look it up than to bluff. Set researchQuery to a short, targeted web query.`;
+Rules:
+- Tip (when given directly) must be at most 30 words, specific, concrete, actionable, ENDING with a complete sentence.
+- Match the transcript's language exactly (German transcript → German tip).
+- Never invent facts. If you'd be guessing on data, set needsResearch=true with a targeted query.
+- Be eager about research: any specific company name, market figure, regulation, person, product, or technical term that the listener probably can't recall should trigger needsResearch=true. Looking it up is cheap.`;
 
-/**
- * Ask the LLM whether a live tip is warranted for the current transcript context.
- * Returns null when no tip should be shown (silence) or when the LLM is unavailable.
- */
-export async function generateInsight(recentText: string): Promise<GeneratedInsight | null> {
+export async function decideInsight(recentText: string): Promise<InsightDecision | null> {
   if (!llmConfigured) return null;
   const text = recentText.trim();
-  if (text.length < 40) return null; // not enough context yet
+  if (text.length < 40) return null;
 
   let raw: string;
   try {
     const completion = await openai.chat.completions.create({
       model: LLM_MODEL,
-      // Need enough budget for thinking tokens + the JSON payload. 200 was
-      // tight enough that Gemini sometimes returned an empty or truncated body.
       max_tokens: 800,
-      temperature: 0.4,
+      temperature: 0.3,
       response_format: { type: "json_object" },
       messages: [
-        { role: "system", content: SYSTEM_PROMPT },
+        { role: "system", content: DECIDE_PROMPT },
         { role: "user", content: `Recent transcript:\n\n${text}\n\nDecide now.` },
       ],
     });
     raw = completion.choices[0]?.message?.content?.trim() || "";
   } catch (err) {
-    logger.error({ err }, "[INSIGHT-ENGINE] LLM call failed");
+    logger.error({ err }, "[INSIGHT-ENGINE] decide LLM call failed");
     return null;
   }
 
   if (!raw) return null;
 
-  let parsed: Partial<GeneratedInsight>;
+  let parsed: Partial<InsightDecision>;
   try {
-    // Strip accidental code fences just in case
     const cleaned = raw.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
     parsed = JSON.parse(cleaned);
   } catch {
-    logger.warn({ raw: raw.slice(0, 200) }, "[INSIGHT-ENGINE] Non-JSON LLM output");
+    logger.warn({ raw: raw.slice(0, 200) }, "[INSIGHT-ENGINE] non-JSON decide output");
     return null;
   }
 
-  const tip = typeof parsed.tip === "string" ? parsed.tip.trim() : "";
-  if (!tip) return null; // explicit silence
+  const shouldFire = parsed.shouldFire === true;
+  if (!shouldFire) return { shouldFire: false, needsResearch: false, researchQuery: null, tip: null, category: "question" };
 
   const category: InsightCategory = VALID_CATEGORIES.includes(parsed.category as InsightCategory)
     ? (parsed.category as InsightCategory)
@@ -95,5 +110,116 @@ export async function generateInsight(recentText: string): Promise<GeneratedInsi
       ? parsed.researchQuery.trim().slice(0, 200)
       : null;
 
-  return { tip, category, needsResearch, researchQuery: needsResearch ? researchQuery : null };
+  // If research is needed, the tip will come from pass 2 — drop whatever the
+  // model wrote here so we don't accidentally show a "check the numbers" stub.
+  const tip =
+    !needsResearch && typeof parsed.tip === "string" && parsed.tip.trim()
+      ? parsed.tip.trim()
+      : null;
+
+  return {
+    shouldFire: needsResearch ? !!researchQuery : !!tip,
+    needsResearch: needsResearch && !!researchQuery,
+    researchQuery: needsResearch ? researchQuery : null,
+    tip,
+    category,
+  };
+}
+
+// ─── Pass 2: synthesize using research ──────────────────────────────────────
+
+const SYNTH_PROMPT = `You are the same strategic advisor from before. You just looked up data for a fact question that came up in the LIVE conversation, and you now whisper a SHORT, SUBSTANTIVE tip that USES the research findings.
+
+You receive:
+1. The recent transcript.
+2. The research answer + a list of source titles & domains.
+
+Write a single concrete tip (max ~40 words, complete sentences, advisor tone) in the SAME language as the transcript. EMBED the key fact (number, name, date, etc.) from the research directly. Cite the most relevant source domain in parentheses at the end like: "(Quelle: example.com)" or "(Source: example.com)". Do NOT say things like "check the numbers" — give the numbers.
+
+If the research came back empty or off-topic, write a tip that admits the uncertainty in one short sentence and suggests asking the speaker directly.
+
+Output ONLY this JSON, no markdown:
+{
+  "tip": string,
+  "category": "opportunity" | "risk" | "connection" | "question"
+}`;
+
+function domainOf(url: string): string {
+  try { return new URL(url).hostname.replace(/^www\./, ""); }
+  catch { return ""; }
+}
+
+export async function synthesizeInsight(
+  recentText: string,
+  researchAnswer: string,
+  researchSources: ResearchSourceLite[],
+): Promise<InsightSynthesis | null> {
+  if (!llmConfigured) return null;
+
+  const sourcesBlock = researchSources
+    .slice(0, 5)
+    .map((s, i) => `${i + 1}. ${s.title} — ${domainOf(s.url)} :: ${s.snippet.slice(0, 200)}`)
+    .join("\n");
+
+  let raw: string;
+  try {
+    const completion = await openai.chat.completions.create({
+      model: LLM_MODEL,
+      max_tokens: 1024,
+      temperature: 0.3,
+      response_format: { type: "json_object" },
+      messages: [
+        { role: "system", content: SYNTH_PROMPT },
+        {
+          role: "user",
+          content:
+            `Recent transcript:\n${recentText}\n\n` +
+            `Research answer:\n${researchAnswer || "(no direct answer)"}\n\n` +
+            `Sources:\n${sourcesBlock || "(no sources)"}`,
+        },
+      ],
+    });
+    raw = completion.choices[0]?.message?.content?.trim() || "";
+  } catch (err) {
+    logger.error({ err }, "[INSIGHT-ENGINE] synth LLM call failed");
+    return null;
+  }
+
+  if (!raw) return null;
+
+  let parsed: Partial<InsightSynthesis>;
+  try {
+    const cleaned = raw.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
+    parsed = JSON.parse(cleaned);
+  } catch {
+    logger.warn({ raw: raw.slice(0, 200) }, "[INSIGHT-ENGINE] non-JSON synth output");
+    return null;
+  }
+
+  const tip = typeof parsed.tip === "string" ? parsed.tip.trim() : "";
+  if (!tip) return null;
+  const category: InsightCategory = VALID_CATEGORIES.includes(parsed.category as InsightCategory)
+    ? (parsed.category as InsightCategory)
+    : "question";
+  return { tip, category };
+}
+
+// ─── Back-compat shim ───────────────────────────────────────────────────────
+// Older routes called generateInsight() expecting the legacy single-pass
+// shape. Keep that working by delegating to decideInsight().
+export interface GeneratedInsight {
+  tip: string;
+  category: InsightCategory;
+  needsResearch: boolean;
+  researchQuery: string | null;
+}
+
+export async function generateInsight(recentText: string): Promise<GeneratedInsight | null> {
+  const d = await decideInsight(recentText);
+  if (!d || !d.shouldFire) return null;
+  // For the legacy callers we don't run pass 2; just return the direct tip
+  // when there is one, or a stub note that research is needed.
+  const tip = d.tip ?? (d.researchQuery ? `(needs lookup) ${d.researchQuery}` : "");
+  if (!tip) return null;
+  return { tip, category: d.category, needsResearch: d.needsResearch, researchQuery: d.researchQuery };
 }

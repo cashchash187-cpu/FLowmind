@@ -1,7 +1,7 @@
 import { db } from "@workspace/db";
 import { sessionsTable, transcriptsTable, aiAssistsTable, usersTable, researchResultsTable } from "@workspace/db";
 import { eq, and, sql, desc } from "drizzle-orm";
-import { generateInsight } from "./insight-engine";
+import { decideInsight, synthesizeInsight } from "./insight-engine";
 import { isResearchAvailable, research } from "./research-provider";
 import { getPlanLimits } from "./plans";
 import { logger } from "./logger";
@@ -120,64 +120,79 @@ export function startInsightTicker(userId: number, sessionId: number) {
         recentText = recentText.slice(-RECENT_TRANSCRIPT_CHARS);
       }
 
-      // 6. Ask the LLM whether a tip is warranted (null => stay silent)
-      const insight = await generateInsight(recentText);
+      // 6. Pass 1 — decide whether to speak and whether facts are needed.
+      const decision = await decideInsight(recentText);
 
-      // Advance the char baseline even on silence, so we wait for genuinely new
-      // speech before asking again (avoids re-querying the same context).
+      // Advance the char baseline even on silence so we wait for genuinely new
+      // speech before re-querying the same context.
       tickEntry.charCountAtLastInsight = currentCharCount;
-      if (!insight) return;
+      if (!decision || !decision.shouldFire) return;
 
-      // 7. Persist the insight
+      // 7. Pass 2 — when facts are needed, run research first, then synthesize
+      // the actual insight using the lookup results. The user must never see
+      // a stub like "check the numbers" — they get the numbers.
+      let finalTip = decision.tip ?? "";
+      let finalCategory = decision.category;
+
+      if (decision.needsResearch && decision.researchQuery) {
+        const cooldownPassed = now - tickEntry.lastResearchAt >= MIN_SECONDS_BETWEEN_RESEARCH * 1000;
+        if (!isResearchAvailable()) {
+          logger.info({ userId, query: decision.researchQuery }, "[INSIGHT-TICKER] research unavailable");
+          if (!finalTip) return; // no tip + no research = nothing to show
+        } else if (!cooldownPassed) {
+          logger.info({ userId, sinceLast: Math.round((now - tickEntry.lastResearchAt) / 1000) }, "[INSIGHT-TICKER] research cooldown active");
+          if (!finalTip) return;
+        } else {
+          const [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
+          const limits = user ? getPlanLimits(user.plan) : getPlanLimits("free");
+          const researchAllowed = !!user && (user.isAdmin || limits.researchRequests > 0);
+          if (!researchAllowed) {
+            logger.warn({ userId, plan: user?.plan }, "[INSIGHT-TICKER] research blocked by plan");
+            if (!finalTip) return;
+          } else {
+            tickEntry.lastResearchAt = now;
+            logger.info({ userId, sessionId: session.id, query: decision.researchQuery }, "[INSIGHT-TICKER] research start");
+            try {
+              const result = await research(decision.researchQuery);
+              // Persist the research result so the side panel can show it too
+              await db.insert(researchResultsTable).values({
+                sessionId: session.id,
+                userId,
+                query: decision.researchQuery,
+                answer: result.answer,
+                sources: result.sources as unknown as Record<string, unknown>[],
+                trigger: "auto",
+                status: "ok",
+              });
+              logger.info({ userId, sessionId: session.id, sources: result.sources.length }, "[INSIGHT-TICKER] research saved");
+
+              const synth = await synthesizeInsight(recentText, result.answer, result.sources);
+              if (synth) {
+                finalTip = synth.tip;
+                finalCategory = synth.category;
+              } else if (!finalTip) {
+                logger.warn({ userId }, "[INSIGHT-TICKER] synthesize returned nothing");
+                return;
+              }
+            } catch (err) {
+              logger.error({ err, userId }, "[INSIGHT-TICKER] research failed");
+              if (!finalTip) return;
+            }
+          }
+        }
+      }
+
+      if (!finalTip) return;
+
+      // 8. Persist the (now fact-grounded) insight
       await db.insert(aiAssistsTable).values({
         sessionId: session.id,
         mode: "insight",
-        suggestion: insight.tip,
-        category: insight.category,
+        suggestion: finalTip,
+        category: finalCategory,
         status: "new",
       });
       tickEntry.lastInsightAt = now;
-
-      // 8. Auto-research when the LLM flagged it as needed
-      if (
-        insight.needsResearch &&
-        insight.researchQuery &&
-        isResearchAvailable() &&
-        now - tickEntry.lastResearchAt >= MIN_SECONDS_BETWEEN_RESEARCH * 1000
-      ) {
-        const [user] = await db.select().from(usersTable).where(eq(usersTable.id, userId)).limit(1);
-        const limits = user ? getPlanLimits(user.plan) : getPlanLimits("free");
-        const researchAllowed = !!user && (user.isAdmin || limits.researchRequests > 0);
-
-        if (researchAllowed) {
-          tickEntry.lastResearchAt = now;
-          logger.info({ userId, sessionId: session.id, query: insight.researchQuery }, "[INSIGHT-TICKER] Auto-research start");
-          try {
-            const result = await research(insight.researchQuery);
-            await db.insert(researchResultsTable).values({
-              sessionId: session.id,
-              userId,
-              query: insight.researchQuery,
-              answer: result.answer,
-              sources: result.sources as unknown as Record<string, unknown>[],
-              trigger: "auto",
-              status: "ok",
-            });
-            logger.info({ userId, sessionId: session.id, sources: result.sources.length }, "[INSIGHT-TICKER] Auto-research saved");
-          } catch (err) {
-            logger.error({ err, userId }, "[INSIGHT-TICKER] Auto-research failed");
-          }
-        } else {
-          logger.warn({ userId, plan: user?.plan }, "[INSIGHT-TICKER] Auto-research skipped: plan/quota");
-        }
-      } else if (insight.needsResearch) {
-        logger.info({
-          userId,
-          query: insight.researchQuery,
-          isResearchAvailable: isResearchAvailable(),
-          sinceLast: Math.round((now - tickEntry.lastResearchAt) / 1000),
-        }, "[INSIGHT-TICKER] Auto-research wanted but gated");
-      }
     } catch (err) {
       logger.error({ err, userId }, "[INSIGHT-TICKER] Tick error");
     }

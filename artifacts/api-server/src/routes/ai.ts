@@ -16,7 +16,7 @@ import {
 } from "@workspace/api-zod";
 import { openai, LLM_MODEL, llmConfigured } from "@workspace/integrations-openai-ai-server";
 import { getOrCreateUsage } from "../lib/usage-helpers";
-import { generateInsight } from "../lib/insight-engine";
+import { decideInsight, synthesizeInsight } from "../lib/insight-engine";
 import { isResearchAvailable, research } from "../lib/research-provider";
 import { getPlanLimits } from "../lib/plans";
 
@@ -303,42 +303,52 @@ router.post("/ai/insights/generate", async (req, res): Promise<void> => {
     .from(transcriptsTable)
     .where(eq(transcriptsTable.sessionId, Number(sessionId)))
     .orderBy(desc(transcriptsTable.startMs))
-    .limit(25);
+    .limit(50);
 
-  const recentText = recentRows.map((r) => r.text).reverse().join(" ").slice(-800);
+  const recentText = recentRows.map((r) => r.text).reverse().join(" ").slice(-2400);
 
-  const insight = await generateInsight(recentText);
-  if (!insight) { res.status(204).end(); return; }
+  // Two-pass agentic flow: decide -> (optional research) -> synthesize.
+  const decision = await decideInsight(recentText);
+  if (!decision || !decision.shouldFire) { res.status(204).end(); return; }
 
-  const [row] = await db.insert(aiAssistsTable).values({
-    sessionId: Number(sessionId),
-    mode: "insight",
-    suggestion: insight.tip,
-    category: insight.category,
-    status: "new",
-  }).returning();
+  let finalTip = decision.tip ?? "";
+  let finalCategory = decision.category;
+  const user = req.user!;
 
-  // Best-effort auto-research when flagged and the user's plan allows it
-  if (insight.needsResearch && insight.researchQuery && isResearchAvailable()) {
-    const user = req.user!;
+  if (decision.needsResearch && decision.researchQuery && isResearchAvailable()) {
     const limits = getPlanLimits(user.plan);
     if (user.isAdmin || limits.researchRequests > 0) {
       try {
-        const result = await research(insight.researchQuery);
+        const result = await research(decision.researchQuery);
         await db.insert(researchResultsTable).values({
           sessionId: Number(sessionId),
           userId: user.id,
-          query: insight.researchQuery,
+          query: decision.researchQuery,
           answer: result.answer,
           sources: result.sources as unknown as Record<string, unknown>[],
           trigger: "auto",
           status: "ok",
         });
+        const synth = await synthesizeInsight(recentText, result.answer, result.sources);
+        if (synth) {
+          finalTip = synth.tip;
+          finalCategory = synth.category;
+        }
       } catch (err) {
         req.log.error({ err }, "Insight auto-research failed");
       }
     }
   }
+
+  if (!finalTip) { res.status(204).end(); return; }
+
+  const [row] = await db.insert(aiAssistsTable).values({
+    sessionId: Number(sessionId),
+    mode: "insight",
+    suggestion: finalTip,
+    category: finalCategory,
+    status: "new",
+  }).returning();
 
   res.json({
     id: row.id, sessionId: row.sessionId, category: row.category,
