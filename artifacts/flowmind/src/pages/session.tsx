@@ -244,7 +244,10 @@ export default function SessionLive() {
     reasoning?: string | null;
   } | null>(null);
   const [aiLimitExceeded, setAiLimitExceeded] = useState(false);
-  const [insightPanelOpen, setInsightPanelOpen] = useState(false);
+  // The mobile insight Sheet defaults to open in insight mode so users
+  // don't have to hunt for a toggle. Desktop always renders the side
+  // column independently of this state.
+  const [insightPanelOpen, setInsightPanelOpen] = useState(true);
   const [resumeModalOpen, setResumeModalOpen] = useState(false);
 
   // Research panel state
@@ -283,9 +286,19 @@ export default function SessionLive() {
     scrollBottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [allTranscripts.length]);
 
-  // Handle a finalised speech chunk
+  // Handle a finalised speech chunk.
+  //
+  // Browser STT runs entirely client-side, so the client must POST every
+  // final to /api/sessions/:id/transcripts. Deepgram runs through the
+  // server WS bridge which ALREADY persists each final to the DB — POSTing
+  // again from the client created duplicate (and on mobile reconnects
+  // triple) transcript rows. We detect the source via the chunk-id prefix
+  // (Deepgram chunks are minted with "dg-" by useTranscription) and skip
+  // the REST POST in that case.
   const handleFinalChunk = useCallback(
     (chunk: LiveTranscriptChunk) => {
+      const isDeepgram = chunk.id.startsWith("dg-");
+
       writeToBuffer(sessionId, {
         localId: chunk.id,
         sessionId,
@@ -303,6 +316,13 @@ export default function SessionLive() {
           startMs: chunk.startMs,
         },
       ]);
+
+      if (isDeepgram) {
+        // Server already persisted via the WS bridge. Just nudge the cache.
+        markSaved(sessionId, chunk.id);
+        queryClient.invalidateQueries({ queryKey: getListTranscriptsQueryKey(sessionId) });
+        return;
+      }
 
       addTranscript.mutate(
         {
@@ -720,7 +740,9 @@ export default function SessionLive() {
             <Button
               variant={insightPanelOpen ? "secondary" : "ghost"}
               size="sm"
-              className="gap-2"
+              // Desktop already shows the insight column permanently, so the
+              // toggle is only useful on mobile (where it opens the bottom Sheet).
+              className="gap-2 md:hidden"
               onClick={() => setInsightPanelOpen((v) => !v)}
               data-testid="button-insight-panel"
             >
@@ -869,7 +891,7 @@ export default function SessionLive() {
                 <Button
                   variant={speech.isListening ? "destructive" : "default"}
                   size="sm"
-                  className="rounded-xl h-9 px-4 gap-2 font-mono text-xs font-bold uppercase tracking-wider"
+                  className="rounded-xl h-11 sm:h-9 px-5 sm:px-4 gap-2 font-mono text-sm sm:text-xs font-bold uppercase tracking-wider"
                   onClick={async () => {
                     if (speech.isListening) { speech.stop(); return; }
                     if (speech.isConnecting) return;
@@ -888,11 +910,11 @@ export default function SessionLive() {
                   data-testid="button-mic-toggle"
                 >
                   {speech.isListening ? (
-                    <><MicOff className="h-3.5 w-3.5" />Stop</>
+                    <><MicOff className="h-4 w-4 sm:h-3.5 sm:w-3.5" />Stop</>
                   ) : speech.isConnecting ? (
-                    <><Loader2 className="h-3.5 w-3.5 animate-spin" />Connecting…</>
+                    <><Loader2 className="h-4 w-4 sm:h-3.5 sm:w-3.5 animate-spin" />Connecting…</>
                   ) : (
-                    <><Mic className="h-3.5 w-3.5" />Start Mic</>
+                    <><Mic className="h-4 w-4 sm:h-3.5 sm:w-3.5" />Start Mic</>
                   )}
                 </Button>
 
@@ -901,8 +923,8 @@ export default function SessionLive() {
                 <div className="h-5 w-px bg-border mx-1" />
 
                 {/* AI assist modes */}
-                <div className="flex items-center gap-1">
-                  <Zap className="h-3.5 w-3.5 text-primary/50 flex-none" />
+                <div className="flex items-center gap-1 sm:gap-1">
+                  <Zap className="h-4 w-4 sm:h-3.5 sm:w-3.5 text-primary/50 flex-none" />
                   {(
                     [
                       { mode: "objection", label: "Counter", icon: AlertTriangle },
@@ -915,12 +937,15 @@ export default function SessionLive() {
                       key={mode}
                       variant="ghost"
                       size="sm"
-                      className="rounded-xl h-8 px-3 text-xs gap-1.5 hover:bg-primary/10 hover:text-primary"
+                      // 44px-tall touch targets on mobile (Apple HIG minimum)
+                      // shrinking to the original 32px on sm+ where pointing
+                      // is precise.
+                      className="rounded-xl h-11 sm:h-8 px-3 sm:px-3 text-xs gap-1.5 hover:bg-primary/10 hover:text-primary"
                       onClick={() => handleAiAssist(mode)}
                       disabled={requestAi.isPending}
                       data-testid={`button-ai-${mode}`}
                     >
-                      <Icon className="h-3 w-3" />
+                      <Icon className="h-4 w-4 sm:h-3 sm:w-3" />
                       <span className="hidden sm:inline">{label}</span>
                     </Button>
                   ))}
@@ -954,17 +979,18 @@ export default function SessionLive() {
         </div>
 
         {/* Insight stream side panel */}
-        {/* Insight panel — sidebar on desktop, full slide-over Sheet on mobile
-            so insight-mode actually works on a phone. */}
-        {isInsightMode && insightPanelOpen && (
+        {/* Insight panel — ALWAYS visible in insight mode, no toggle needed.
+            On desktop it lives as a permanent right-hand column; on mobile
+            it slides up as a bottom drawer that's open by default. */}
+        {isInsightMode && (
           <>
-            <div className="hidden md:flex flex-col w-80 border-l border-border/40 bg-card/50 backdrop-blur overflow-y-auto p-4 shrink-0">
+            <div className="hidden md:flex flex-col w-80 lg:w-96 border-l border-border/40 bg-card/50 backdrop-blur overflow-y-auto p-4 shrink-0">
               <InsightStream sessionId={sessionId} />
             </div>
             <Sheet open={insightPanelOpen} onOpenChange={setInsightPanelOpen}>
               <SheetContent
-                side="right"
-                className="md:hidden w-[88vw] max-w-sm p-0 border-l border-primary/20 bg-card/95 backdrop-blur-xl"
+                side="bottom"
+                className="md:hidden h-[55vh] p-0 border-t border-primary/20 bg-card/95 backdrop-blur-xl rounded-t-2xl"
               >
                 <SheetTitle className="sr-only">Insight Stream</SheetTitle>
                 <div className="h-full overflow-y-auto p-4">

@@ -53,12 +53,15 @@ export interface LiveTranscriptChunk {
   isFinal: boolean;
 }
 
+// Auto-detect was removed intentionally — both engines were unreliable when
+// no explicit language was set; Deepgram's "multi" model muddled German with
+// English fragments, and browser STT fell back to system default which often
+// guessed wrong. Pick a concrete language.
 export const LANGUAGE_OPTIONS = [
-  { code: "auto", label: "Auto-detect" },
+  { code: "de-DE", label: "Deutsch" },
   { code: "en-US", label: "English (US)" },
   { code: "en-GB", label: "English (UK)" },
   { code: "en-IN", label: "English (India)" },
-  { code: "de-DE", label: "Deutsch" },
   { code: "fr-FR", label: "Français" },
   { code: "es-ES", label: "Español" },
   { code: "it-IT", label: "Italiano" },
@@ -107,6 +110,10 @@ export function useSpeechRecognition({
   const shouldRestartRef = useRef(false);
   const lastFinalTextRef = useRef<string>("");
   const watchdogRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Stays true once we've confirmed mic access during this app session, so
+  // the watchdog-driven restarts every 6s don't re-pop the iOS "mic granted"
+  // toast on every restart. Reset only when the page reloads.
+  const micGrantedRef = useRef(false);
 
   useEffect(() => { onFinalChunkRef.current = onFinalChunk; }, [onFinalChunk]);
   useEffect(() => { languageRef.current = language; }, [language]);
@@ -133,56 +140,64 @@ export function useSpeechRecognition({
       return;
     }
 
-    // Use the Permissions API to know whether we already have mic access
-    // BEFORE opening a stream. Opening getUserMedia on every start was
-    // re-triggering the Android "mic in use" banner on every restart, which
-    // the user reported as a permission popup looping nonstop.
-    let permState: PermissionState | "unsupported" = "unsupported";
-    try {
-      if (navigator.permissions) {
-        const status = await navigator.permissions.query({ name: "microphone" as PermissionName });
-        permState = status.state;
-        setPermissionState(status.state as typeof permissionState);
-      }
-    } catch {
-      // Some browsers (older Safari) don't expose "microphone" — fall through.
-    }
-
-    if (permState === "denied") {
-      setError("Microphone access is blocked. Open the address-bar lock icon to allow it, then try again.");
-      shouldRestartRef.current = false;
-      return;
-    }
-
-    if (permState !== "granted") {
-      // We don't know if mic is granted, so trigger the prompt ONCE by
-      // opening + immediately closing a stream. This is the only place the
-      // OS popup should appear.
+    // Skip every permission probe once we've already confirmed mic access in
+    // this app session. Without this, the watchdog's silent restarts every
+    // ~6s re-fired getUserMedia, which on iOS Chrome shows a fresh "mic
+    // granted" toast every single time.
+    if (!micGrantedRef.current) {
+      let permState: PermissionState | "unsupported" = "unsupported";
       try {
-        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-        stream.getTracks().forEach((t) => t.stop());
-        setPermissionState("granted");
-      } catch (err: unknown) {
-        const name = err instanceof Error ? err.name : "";
-        if (name === "NotAllowedError" || name === "SecurityError") {
-          setPermissionState("denied");
-          setError("Microphone access denied. Click the lock icon in your address bar to allow it, then try again.");
-        } else if (name === "NotFoundError" || name === "OverconstrainedError") {
-          setError("No microphone detected. Plug one in or pick a different input device.");
-        } else {
-          setError(`Could not access microphone${err instanceof Error ? `: ${err.message}` : ""}.`);
+        if (navigator.permissions) {
+          const status = await navigator.permissions.query({ name: "microphone" as PermissionName });
+          permState = status.state;
+          setPermissionState(status.state as typeof permissionState);
         }
+      } catch {
+        // Some browsers (Safari/iOS Chrome) don't expose "microphone" via
+        // the Permissions API — we fall through and let SpeechRecognition
+        // handle the prompt itself instead of triggering an extra
+        // getUserMedia toast.
+      }
+
+      if (permState === "denied") {
+        setError("Microphone access is blocked. Open the address-bar lock icon to allow it, then try again.");
         shouldRestartRef.current = false;
         return;
       }
+
+      if (permState === "granted") {
+        // Already granted — no prompt, no extra getUserMedia.
+        micGrantedRef.current = true;
+      } else if (permState === "prompt") {
+        // Trigger the OS prompt ONCE by opening + immediately closing a
+        // stream. SpeechRecognition.start() will open its own pipeline.
+        try {
+          const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+          stream.getTracks().forEach((t) => t.stop());
+          setPermissionState("granted");
+          micGrantedRef.current = true;
+        } catch (err: unknown) {
+          const name = err instanceof Error ? err.name : "";
+          if (name === "NotAllowedError" || name === "SecurityError") {
+            setPermissionState("denied");
+            setError("Microphone access denied. Click the lock icon in your address bar to allow it, then try again.");
+          } else if (name === "NotFoundError" || name === "OverconstrainedError") {
+            setError("No microphone detected. Plug one in or pick a different input device.");
+          } else {
+            setError(`Could not access microphone${err instanceof Error ? `: ${err.message}` : ""}.`);
+          }
+          shouldRestartRef.current = false;
+          return;
+        }
+      }
+      // "unsupported" (iOS Safari, iOS Chrome): fall through. Let
+      // SpeechRecognition handle the prompt — no preflight getUserMedia.
     }
 
     const recognition = new Ctor();
     recognition.continuous = true;
     recognition.interimResults = true;
-    if (languageRef.current !== "auto") {
-      recognition.lang = languageRef.current;
-    }
+    recognition.lang = languageRef.current;
     recognition.maxAlternatives = 1;
 
     // Watchdog: restart if no speech for WATCHDOG_MS
@@ -198,6 +213,9 @@ export function useSpeechRecognition({
     recognition.onstart = () => {
       setIsListening(true);
       setPermissionState("granted");
+      // If SpeechRecognition opens successfully the OS must have granted
+      // mic access, so we can short-circuit all future permission probes.
+      micGrantedRef.current = true;
       setError(null);
       resetWatchdog();
     };

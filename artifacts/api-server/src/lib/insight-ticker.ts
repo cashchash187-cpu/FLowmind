@@ -6,11 +6,11 @@ import { isResearchAvailable, research } from "./research-provider";
 import { getPlanLimits } from "./plans";
 import { logger } from "./logger";
 
-const TICK_INTERVAL_MS = 8_000;         // check every 8s — closer to the "every 15s" feel the user wants
-const MIN_CHARS_SINCE_LAST = 60;        // >=60 new chars of speech required (was 150 — too gated)
-const MIN_SECONDS_SINCE_LAST = 15;      // >=15s between insights (also protects free-tier LLM quota)
-const HEARTBEAT_STALE_MS = 90_000;      // session considered idle if hb > 90s ago
-const RECENT_TRANSCRIPT_CHARS = 1600;   // chars of recent speech to send to the LLM
+const TICK_INTERVAL_MS = 5_000;         // check every 5s — feels live
+const MIN_CHARS_SINCE_LAST = 40;        // >=40 new chars of speech required (was 60 — still too gated)
+const MIN_SECONDS_SINCE_LAST = 10;      // >=10s between insights
+const HEARTBEAT_STALE_MS = 120_000;     // session considered idle if hb > 2min ago
+const RECENT_TRANSCRIPT_CHARS = 2400;   // chars of recent speech to send to the LLM
 
 const LOG_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -24,7 +24,7 @@ interface TickerEntry {
 
 const tickers = new Map<number, TickerEntry>();
 const MAX_TICKERS = 500;
-const MIN_SECONDS_BETWEEN_RESEARCH = 90; // auto-research cooldown per user
+const MIN_SECONDS_BETWEEN_RESEARCH = 30; // auto-research cooldown per user
 
 setInterval(() => {
   logger.info({ tickerCount: tickers.size }, "[INSIGHT-TICKER] Active tickers");
@@ -151,6 +151,7 @@ export function startInsightTicker(userId: number, sessionId: number) {
 
         if (researchAllowed) {
           tickEntry.lastResearchAt = now;
+          logger.info({ userId, sessionId: session.id, query: insight.researchQuery }, "[INSIGHT-TICKER] Auto-research start");
           try {
             const result = await research(insight.researchQuery);
             await db.insert(researchResultsTable).values({
@@ -162,10 +163,20 @@ export function startInsightTicker(userId: number, sessionId: number) {
               trigger: "auto",
               status: "ok",
             });
+            logger.info({ userId, sessionId: session.id, sources: result.sources.length }, "[INSIGHT-TICKER] Auto-research saved");
           } catch (err) {
             logger.error({ err, userId }, "[INSIGHT-TICKER] Auto-research failed");
           }
+        } else {
+          logger.warn({ userId, plan: user?.plan }, "[INSIGHT-TICKER] Auto-research skipped: plan/quota");
         }
+      } else if (insight.needsResearch) {
+        logger.info({
+          userId,
+          query: insight.researchQuery,
+          isResearchAvailable: isResearchAvailable(),
+          sinceLast: Math.round((now - tickEntry.lastResearchAt) / 1000),
+        }, "[INSIGHT-TICKER] Auto-research wanted but gated");
       }
     } catch (err) {
       logger.error({ err, userId }, "[INSIGHT-TICKER] Tick error");

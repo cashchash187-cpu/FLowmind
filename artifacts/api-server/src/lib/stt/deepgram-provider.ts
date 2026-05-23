@@ -5,16 +5,18 @@ const DEEPGRAM_WS_URL = "wss://api.deepgram.com/v1/listen";
 const KEEPALIVE_MS = 8_000;
 
 /**
- * Normalize a UI-level language code into what Deepgram expects.
- *  - "auto" / "multi" / "" → "multi"  (with detect_language=true)
- *  - "de" / "de-DE" / "de-CH" → "de"
+ * Normalize a UI-level language code into Deepgram's 2-letter form.
+ *  - "de-DE" / "de-CH" → "de"
  *  - "en-US" → "en"
- *  - otherwise the first 2 characters
+ *  - empty / unknown → default "de" (FlowMind primary language)
+ *
+ * Multilingual auto-detect was removed: Deepgram's `multi` model produced
+ * noisy English-tinted German for our users; an explicit language always
+ * gives better quality.
  */
 function normalizeLang(input: string): string {
-  if (!input) return "multi";
+  if (!input) return "de";
   const lower = input.toLowerCase();
-  if (lower === "auto" || lower === "multi") return "multi";
   return lower.split("-")[0]!.slice(0, 2);
 }
 
@@ -25,12 +27,6 @@ export const deepgramProvider: SttProvider = {
 
     const lang = normalizeLang(opts.language);
 
-    // nova-3 is Deepgram's current multilingual model — covers en/de/es/fr/
-    // it/pt/nl/ja/hi/ru with proper code-switching. nova-2 multi is en+es
-    // only, which is why this server used to silently force English for
-    // German speakers. `language=multi` alone enables the multilingual model;
-    // the `detect_language` query param is REST-only and rejected here with
-    // a 400, so we don't send it.
     const params = new URLSearchParams({
       model: "nova-3",
       language: lang,

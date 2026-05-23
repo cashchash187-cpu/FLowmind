@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { useParams, Link } from "wouter";
 import {
   useGetSessionNotes,
@@ -259,6 +260,23 @@ export default function SessionNotes() {
       }
     );
   };
+
+  // Auto-generate ONCE when the notes page is opened for a session that
+  // doesn't have notes yet AND has some transcript content to summarise.
+  // The ref guard makes sure we never re-fire — even if the user clears
+  // notes manually, subsequent visits stay on-demand.
+  const autoGenAttemptedRef = useRef(false);
+  useEffect(() => {
+    if (autoGenAttemptedRef.current) return;
+    if (notesLoading) return;
+    if (notes) return;
+    if (!transcripts || transcripts.length === 0) return;
+    if (generateSummary.isPending) return;
+    autoGenAttemptedRef.current = true;
+    handleRegenerate();
+    // handleRegenerate references generateSummary which is stable across renders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [notesLoading, notes, transcripts]);
 
   const handleExport = async (includeTranscript: boolean) => {
     if (!notes) return;

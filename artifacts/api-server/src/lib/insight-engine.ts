@@ -39,7 +39,7 @@ Hard rules:
 - Tip is at most 30 words, specific, concrete, actionable.
 - Language MUST match the transcript exactly (German transcript -> German tip; English -> English).
 - Never invent facts. If you're guessing, return null.
-- needsResearch should fire when a specific company, product, regulation, number, person, or technical concept comes up that the listener probably doesn't have memorized.`;
+- needsResearch SHOULD fire often — any time a specific company, product, person, regulation, market number, technical concept, or industry-specific term comes up that the listener probably can't recall on the fly. Better to look it up than to bluff. Set researchQuery to a short, targeted web query.`;
 
 /**
  * Ask the LLM whether a live tip is warranted for the current transcript context.

@@ -38,13 +38,18 @@ const queryClient = new QueryClient({
 
 function PageTransition({ children }: { children: React.ReactNode }) {
   const [location] = useLocation();
+  // No `mode="wait"`: with mode="wait", the new page only renders AFTER the
+  // old one finishes exiting, which combined with React 19 + AnimatePresence
+  // occasionally left a blank frame that the user perceived as a permanent
+  // white screen (no reload, nothing visible). Letting the new page render
+  // immediately fixes that — a brief crossfade is fine.
   return (
-    <AnimatePresence mode="wait" initial={false}>
+    <AnimatePresence initial={false}>
       <motion.div
         key={location}
         initial={{ opacity: 0, y: 6 }}
         animate={{ opacity: 1, y: 0 }}
-        exit={{ opacity: 0, y: -4 }}
+        exit={{ opacity: 0 }}
         transition={{ duration: 0.18, ease: [0.16, 1, 0.3, 1] }}
         style={{ willChange: "opacity, transform" }}
       >
