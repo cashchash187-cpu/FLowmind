@@ -309,7 +309,7 @@ export default function WelcomePage() {
         <div className="absolute bottom-0 left-0 w-[300px] h-[300px] bg-primary/4 rounded-full blur-[80px]" />
       </div>
 
-      <div className="relative z-10 p-6 md:p-8 lg:p-10 max-w-5xl mx-auto space-y-14">
+      <div className="relative z-10 p-4 sm:p-6 md:p-8 lg:p-10 max-w-5xl mx-auto space-y-10 md:space-y-14">
 
         {/* ── HERO ───────────────────────────────────────────────────────── */}
         <motion.div
@@ -325,7 +325,7 @@ export default function WelcomePage() {
             </div>
           )}
 
-          <h1 className="text-5xl md:text-6xl lg:text-7xl font-extrabold tracking-tight leading-none">
+          <h1 className="text-4xl sm:text-5xl md:text-6xl lg:text-7xl font-extrabold tracking-tight leading-tight">
             {hasHistory ? (
               <>Welcome back, <span className="text-primary">{firstName}</span></>
             ) : (
@@ -335,7 +335,7 @@ export default function WelcomePage() {
             )}
           </h1>
 
-          <p className="text-lg md:text-xl text-muted-foreground max-w-xl leading-relaxed">
+          <p className="text-base sm:text-lg md:text-xl text-muted-foreground max-w-xl leading-relaxed">
             {hasHistory
               ? "Ready for your next session?"
               : "Your AI conversation copilot. Listen to any meeting or call and get real-time strategic help."}

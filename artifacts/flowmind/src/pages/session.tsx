@@ -106,6 +106,15 @@ function formatTime(ms: number) {
   return `${m}:${s.toString().padStart(2, "0")}`;
 }
 
+// Shared AI assist mode definitions so the desktop bottom bar and the mobile
+// 4-up grid stay in sync.
+const AI_MODES = [
+  { mode: "objection", label: "Counter", icon: AlertTriangle },
+  { mode: "answer", label: "Answer", icon: MessageSquare },
+  { mode: "explain", label: "Explain", icon: HelpCircle },
+  { mode: "logic_check", label: "Logic", icon: CheckCircle2 },
+] as const;
+
 export default function SessionLive() {
   const params = useParams();
   const sessionId = Number(params.id);
@@ -513,14 +522,15 @@ export default function SessionLive() {
         </div>
 
         <div className="flex items-center gap-2 flex-none">
-          {/* STT engine dropdown — always visible when session active */}
+          {/* STT engine dropdown — only on desktop; mobile users keep their
+              plan default. */}
           {isSessionActive && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
                   variant="ghost"
                   size="sm"
-                  className={`gap-1.5 h-8 px-2 font-mono text-xs ${
+                  className={`hidden md:inline-flex gap-1.5 h-8 px-2 font-mono text-xs ${
                     speech.engine === "deepgram"
                       ? "text-primary border border-primary/25 bg-primary/5 hover:bg-primary/10"
                       : "text-muted-foreground border border-border/50"
@@ -693,9 +703,9 @@ export default function SessionLive() {
           )}
 
           <Link href={`/session/${sessionId}/notes`}>
-            <Button variant="ghost" size="sm" className="gap-2" data-testid="link-session-notes">
+            <Button variant="ghost" size="sm" className="hidden md:inline-flex gap-2 h-8" data-testid="link-session-notes">
               <FileText className="h-4 w-4" />
-              <span className="hidden sm:inline text-xs">Notes</span>
+              <span className="text-xs">Notes</span>
             </Button>
           </Link>
 
@@ -756,7 +766,7 @@ export default function SessionLive() {
         <div className="flex-1 flex overflow-hidden min-h-0">
           <div className="flex-1 flex flex-col overflow-hidden">
             <ScrollArea className="flex-1 px-4 sm:px-6 py-4">
-              <div className="max-w-3xl mx-auto space-y-3 pb-44">
+              <div className="max-w-3xl mx-auto space-y-3 pb-64 md:pb-44">
                 {transcriptsLoading && !optimistic.length ? (
                   <div className="space-y-4 pt-4">
                     {[1, 2, 3].map((i) => (
@@ -828,83 +838,135 @@ export default function SessionLive() {
               user can always restart the mic (clicking Start Mic on an idle
               session implicitly resumes it first). */}
           {(isSessionActive || session.status === "idle") && (
-            <div className="absolute bottom-3 sm:bottom-5 left-0 right-0 flex flex-col items-center gap-2 px-2 sm:px-4">
-              <div className="flex items-center gap-2 bg-background/90 backdrop-blur-xl border border-border rounded-2xl px-3 py-2 shadow-lg shadow-black/5 max-w-full overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
-                {/* Mic toggle */}
-                <Button
-                  variant={speech.isListening ? "destructive" : "default"}
-                  size="sm"
-                  className="rounded-xl h-11 sm:h-9 px-5 sm:px-4 gap-2 font-mono text-sm sm:text-xs font-bold uppercase tracking-wider"
-                  onClick={async () => {
-                    if (speech.isListening) { speech.stop(); return; }
-                    if (speech.isConnecting) return;
-                    // Auto-resume idle sessions before starting the mic, so a
-                    // returning user doesn't have to hunt for the resume modal.
-                    if (session.status === "idle") {
-                      try { await resumeSession.mutateAsync(); } catch { /* surface via mutation state */ }
-                    }
-                    speech.start();
-                  }}
-                  // Only disable while the WS is actually connecting. If the
-                  // browser doesn't support STT we still let the click fire so
-                  // the user gets the explicit error toast/banner instead of
-                  // staring at a dead button.
-                  disabled={speech.isConnecting || resumeSession.isPending}
-                  data-testid="button-mic-toggle"
-                >
-                  {speech.isListening ? (
-                    <><MicOff className="h-4 w-4 sm:h-3.5 sm:w-3.5" />Stop</>
-                  ) : speech.isConnecting ? (
-                    <><Loader2 className="h-4 w-4 sm:h-3.5 sm:w-3.5 animate-spin" />Connecting…</>
-                  ) : (
-                    <><Mic className="h-4 w-4 sm:h-3.5 sm:w-3.5" />Start Mic</>
-                  )}
-                </Button>
+            <>
+              {/* ─── MOBILE bottom bar — vertical stack, big touch targets ───
+                   Row 1: AI modes as a 4-up grid with full labels
+                   Row 2: Big Mic button with visualizer
+                   Row 3: Tiny status hint
+                   Used below md breakpoint only. */}
+              <div className="md:hidden absolute bottom-0 left-0 right-0 px-3 pb-3 pt-2 bg-gradient-to-t from-background via-background/95 to-transparent">
+                <div className="flex flex-col gap-2 max-w-md mx-auto">
+                  {/* AI mode grid */}
+                  <div className="grid grid-cols-4 gap-1.5 bg-card/90 backdrop-blur-xl border border-border rounded-2xl p-2 shadow-lg shadow-black/10">
+                    {AI_MODES.map(({ mode, label, icon: Icon }) => (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={() => handleAiAssist(mode)}
+                        disabled={requestAi.isPending}
+                        className="flex flex-col items-center gap-1 py-2 rounded-xl hover:bg-primary/10 active:bg-primary/15 hover:text-primary disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                        data-testid={`button-ai-${mode}`}
+                      >
+                        <Icon className="h-5 w-5" />
+                        <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">
+                          {label}
+                        </span>
+                      </button>
+                    ))}
+                  </div>
 
-                {speech.isListening && <MicVisualizer isListening />}
-
-                <div className="h-5 w-px bg-border mx-1" />
-
-                {/* AI assist modes */}
-                <div className="flex items-center gap-1 sm:gap-1">
-                  <Zap className="h-4 w-4 sm:h-3.5 sm:w-3.5 text-primary/50 flex-none" />
-                  {(
-                    [
-                      { mode: "objection", label: "Counter", icon: AlertTriangle },
-                      { mode: "answer", label: "Answer", icon: MessageSquare },
-                      { mode: "explain", label: "Explain", icon: HelpCircle },
-                      { mode: "logic_check", label: "Logic", icon: CheckCircle2 },
-                    ] as const
-                  ).map(({ mode, label, icon: Icon }) => (
+                  {/* Big mic + visualizer */}
+                  <div className="flex items-center gap-3 bg-card/90 backdrop-blur-xl border border-border rounded-2xl px-3 py-2 shadow-lg shadow-black/10">
                     <Button
-                      key={mode}
-                      variant="ghost"
-                      size="sm"
-                      // 44px-tall touch targets on mobile (Apple HIG minimum)
-                      // shrinking to the original 32px on sm+ where pointing
-                      // is precise.
-                      className="rounded-xl h-11 sm:h-8 px-3 sm:px-3 text-xs gap-1.5 hover:bg-primary/10 hover:text-primary"
-                      onClick={() => handleAiAssist(mode)}
-                      disabled={requestAi.isPending}
-                      data-testid={`button-ai-${mode}`}
+                      variant={speech.isListening ? "destructive" : "default"}
+                      className="flex-1 h-14 rounded-xl gap-2 font-mono text-base font-bold uppercase tracking-wider"
+                      onClick={async () => {
+                        if (speech.isListening) { speech.stop(); return; }
+                        if (speech.isConnecting) return;
+                        if (session.status === "idle") {
+                          try { await resumeSession.mutateAsync(); } catch { /* state surfaced by mutation */ }
+                        }
+                        speech.start();
+                      }}
+                      disabled={speech.isConnecting || resumeSession.isPending}
+                      data-testid="button-mic-toggle"
                     >
-                      <Icon className="h-4 w-4 sm:h-3 sm:w-3" />
-                      <span className="hidden sm:inline">{label}</span>
+                      {speech.isListening ? (
+                        <><MicOff className="h-5 w-5" />Stop</>
+                      ) : speech.isConnecting ? (
+                        <><Loader2 className="h-5 w-5 animate-spin" />Connecting…</>
+                      ) : (
+                        <><Mic className="h-5 w-5" />Start Mic</>
+                      )}
                     </Button>
-                  ))}
-                  {requestAi.isPending && (
-                    <Loader2 className="h-4 w-4 animate-spin text-primary ml-1" />
+                    {speech.isListening && (
+                      <div className="flex-none">
+                        <MicVisualizer isListening />
+                      </div>
+                    )}
+                    {requestAi.isPending && (
+                      <Loader2 className="h-5 w-5 animate-spin text-primary flex-none" />
+                    )}
+                  </div>
+
+                  {/* Status hint */}
+                  {allTranscripts.length > 0 && (
+                    <div className="text-center text-[10px] font-mono text-muted-foreground/50 tracking-wider uppercase">
+                      {allTranscripts.length} entr{allTranscripts.length === 1 ? "y" : "ies"} · {currentLang?.label}
+                    </div>
                   )}
                 </div>
               </div>
 
-              {/* Status hint */}
-              {allTranscripts.length > 0 && (
-                <span className="text-[10px] font-mono text-muted-foreground/40 tracking-wider uppercase">
-                  {allTranscripts.length} entr{allTranscripts.length === 1 ? "y" : "ies"} · {currentLang?.label}
-                </span>
-              )}
-            </div>
+              {/* ─── DESKTOP bottom bar — original horizontal pill ──────── */}
+              <div className="hidden md:flex absolute bottom-5 left-0 right-0 flex-col items-center gap-2 px-4">
+                <div className="flex items-center gap-2 bg-background/90 backdrop-blur-xl border border-border rounded-2xl px-3 py-2 shadow-lg shadow-black/5">
+                  {/* Mic toggle */}
+                  <Button
+                    variant={speech.isListening ? "destructive" : "default"}
+                    size="sm"
+                    className="rounded-xl h-9 px-4 gap-2 font-mono text-xs font-bold uppercase tracking-wider"
+                    onClick={async () => {
+                      if (speech.isListening) { speech.stop(); return; }
+                      if (speech.isConnecting) return;
+                      if (session.status === "idle") {
+                        try { await resumeSession.mutateAsync(); } catch { /* surface via mutation state */ }
+                      }
+                      speech.start();
+                    }}
+                    disabled={speech.isConnecting || resumeSession.isPending}
+                  >
+                    {speech.isListening ? (
+                      <><MicOff className="h-3.5 w-3.5" />Stop</>
+                    ) : speech.isConnecting ? (
+                      <><Loader2 className="h-3.5 w-3.5 animate-spin" />Connecting…</>
+                    ) : (
+                      <><Mic className="h-3.5 w-3.5" />Start Mic</>
+                    )}
+                  </Button>
+
+                  {speech.isListening && <MicVisualizer isListening />}
+
+                  <div className="h-5 w-px bg-border mx-1" />
+
+                  <div className="flex items-center gap-1">
+                    <Zap className="h-3.5 w-3.5 text-primary/50 flex-none" />
+                    {AI_MODES.map(({ mode, label, icon: Icon }) => (
+                      <Button
+                        key={mode}
+                        variant="ghost"
+                        size="sm"
+                        className="rounded-xl h-8 px-3 text-xs gap-1.5 hover:bg-primary/10 hover:text-primary"
+                        onClick={() => handleAiAssist(mode)}
+                        disabled={requestAi.isPending}
+                      >
+                        <Icon className="h-3 w-3" />
+                        <span>{label}</span>
+                      </Button>
+                    ))}
+                    {requestAi.isPending && (
+                      <Loader2 className="h-4 w-4 animate-spin text-primary ml-1" />
+                    )}
+                  </div>
+                </div>
+
+                {allTranscripts.length > 0 && (
+                  <span className="text-[10px] font-mono text-muted-foreground/40 tracking-wider uppercase">
+                    {allTranscripts.length} entr{allTranscripts.length === 1 ? "y" : "ies"} · {currentLang?.label}
+                  </span>
+                )}
+              </div>
+            </>
           )}
 
           {/* Ended state — only show on truly ended sessions (idle sessions
