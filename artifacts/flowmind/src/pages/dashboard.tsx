@@ -152,7 +152,7 @@ export default function Dashboard() {
                 </div>
                 <p className="text-sm text-muted-foreground">Your latest recorded conversations.</p>
               </div>
-              <Link href="/history" data-testid="link-view-all">
+              <Link href="/sessions" data-testid="link-view-all">
                 <Button variant="ghost" size="sm" className="gap-1.5 text-primary hover:text-primary hover:bg-primary/10 h-9 rounded-lg text-sm font-semibold">
                   View All <ArrowRight className="h-3.5 w-3.5" />
                 </Button>

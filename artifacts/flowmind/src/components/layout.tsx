@@ -48,7 +48,7 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
   const navItems = [
     { href: "/", label: "Home", icon: Home, testId: "link-nav-home" },
     { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, testId: "link-nav-dashboard" },
-    { href: "/history", label: "History", icon: History, testId: "link-nav-history" },
+    { href: "/sessions", label: "Sessions", icon: History, testId: "link-nav-history" },
     { href: "/settings", label: "Settings", icon: Settings, testId: "link-nav-settings" },
     { href: "/pricing", label: "Pricing", icon: CreditCard, testId: "link-nav-pricing" },
     ...(user?.isAdmin ? [{ href: "/admin", label: "Admin", icon: ShieldCheck, testId: "link-nav-admin" }] : []),

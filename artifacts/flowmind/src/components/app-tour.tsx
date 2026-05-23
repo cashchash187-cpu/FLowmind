@@ -46,8 +46,8 @@ const TOUR_STEPS = [
   {
     element: "[data-testid='link-nav-history']",
     popover: {
-      title: "📁 History",
-      description: "Browse and search all past sessions. Pick up where you left off or review AI-generated notes.",
+      title: "📁 Sessions",
+      description: "Browse every past session. Drag them into folders, rename anything inline, pick up where you left off.",
       side: "right" as const,
     },
   },

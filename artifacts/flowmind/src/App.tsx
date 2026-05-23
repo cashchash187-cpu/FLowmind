@@ -80,6 +80,8 @@ function AppRouter() {
                   <Route path="/session/new" component={NewSession} />
                   <Route path="/session/:id/notes" component={SessionNotes} />
                   <Route path="/session/:id" component={SessionLive} />
+                  <Route path="/sessions" component={HistoryPage} />
+                  {/* Keep the old /history URL working for any existing bookmarks. */}
                   <Route path="/history" component={HistoryPage} />
                   <Route path="/pricing" component={PricingPage} />
                   <Route path="/settings" component={SettingsPage} />

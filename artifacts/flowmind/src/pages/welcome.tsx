@@ -376,10 +376,10 @@ export default function WelcomePage() {
               </Button>
             )}
             {hasHistory && (
-              <Link href="/history">
+              <Link href="/sessions">
                 <Button variant="outline" size="lg" className="gap-2 h-12 px-6 rounded-xl pointer-events-auto">
                   <BarChart3 className="h-4 w-4" aria-hidden />
-                  View History
+                  View Sessions
                 </Button>
               </Link>
             )}

@@ -12,6 +12,7 @@ import transcribeRouter from "./transcribe";
 import accountRouter from "./account";
 import adminRouter from "./admin";
 import researchRouter from "./research";
+import foldersRouter from "./folders";
 import { requireAuth, requireAdmin } from "../middlewares/requireAuth";
 
 const router: IRouter = Router();
@@ -40,6 +41,7 @@ router.use(aiRouter);
 router.use(usageRouter);
 router.use(transcribeRouter);
 router.use(researchRouter);
+router.use(foldersRouter);
 
 // 7. Admin routes — requireAdmin is path-scoped to /admin/* so unknown paths
 // fall through to a 404 for normal users instead of leaking a misleading 403.
