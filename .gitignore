@@ -8,3 +8,9 @@ build/
 *.log
 zipFile.zip
 source-code.zip
+
+# env files (real secrets); .env.example is checked in for reference
+.env
+.env.*
+!.env.example
+
