@@ -14,7 +14,7 @@ router.get("/config", async (req, res) => {
     const prices = await stripe.prices.list({ active: true, limit: 1 });
     stripeAvailable = prices.data.length > 0;
   } catch {
-    devBanner = "Stripe not connected — open Replit Integrations tab → add Stripe → reload server.";
+    devBanner = "Stripe not connected — set STRIPE_SECRET_KEY (and optionally STRIPE_WEBHOOK_SECRET).";
   }
 
   const googleAuthAvailable = !!process.env.GOOGLE_CLIENT_ID;
