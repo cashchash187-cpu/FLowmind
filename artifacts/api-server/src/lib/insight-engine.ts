@@ -1,6 +1,29 @@
 import { openai, LLM_MODEL, llmConfigured } from "@workspace/integrations-openai-ai-server";
 import { logger } from "./logger";
 
+/**
+ * Retry a function on transient LLM errors (429 rate-limit, 5xx overload).
+ * Gemini's free tier in particular returns lots of 503s under modest load —
+ * one retry with a short backoff is usually enough to get through.
+ */
+async function withRetry<T>(label: string, fn: () => Promise<T>, attempts = 3): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err: unknown) {
+      lastErr = err;
+      const status = (err as { status?: number })?.status;
+      const isTransient = status === 429 || (status !== undefined && status >= 500 && status < 600);
+      if (!isTransient || i === attempts - 1) throw err;
+      const delayMs = 600 * Math.pow(2, i); // 600ms, 1.2s, 2.4s
+      logger.warn({ label, status, attempt: i + 1, delayMs }, "[LLM] transient error, retrying");
+      await new Promise((resolve) => setTimeout(resolve, delayMs));
+    }
+  }
+  throw lastErr;
+}
+
 export type InsightCategory = "opportunity" | "risk" | "connection" | "question";
 
 /** Outcome of the first pass: decide if we should speak and whether we need facts. */
@@ -70,16 +93,18 @@ export async function decideInsight(recentText: string): Promise<InsightDecision
 
   let raw: string;
   try {
-    const completion = await openai.chat.completions.create({
-      model: LLM_MODEL,
-      max_tokens: 800,
-      temperature: 0.3,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: DECIDE_PROMPT },
-        { role: "user", content: `Recent transcript:\n\n${text}\n\nDecide now.` },
-      ],
-    });
+    const completion = await withRetry("decide", () =>
+      openai.chat.completions.create({
+        model: LLM_MODEL,
+        max_tokens: 800,
+        temperature: 0.3,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: DECIDE_PROMPT },
+          { role: "user", content: `Recent transcript:\n\n${text}\n\nDecide now.` },
+        ],
+      }),
+    );
     raw = completion.choices[0]?.message?.content?.trim() || "";
   } catch (err) {
     logger.error({ err }, "[INSIGHT-ENGINE] decide LLM call failed");
@@ -182,22 +207,24 @@ export async function synthesizeInsight(
 
   let raw: string;
   try {
-    const completion = await openai.chat.completions.create({
-      model: LLM_MODEL,
-      max_tokens: 1024,
-      temperature: 0.3,
-      response_format: { type: "json_object" },
-      messages: [
-        { role: "system", content: SYNTH_PROMPT },
-        {
-          role: "user",
-          content:
-            `Recent transcript:\n${recentText}\n\n` +
-            `Research answer:\n${researchAnswer || "(no direct answer)"}\n\n` +
-            `Sources:\n${sourcesBlock || "(no sources)"}`,
-        },
-      ],
-    });
+    const completion = await withRetry("synth", () =>
+      openai.chat.completions.create({
+        model: LLM_MODEL,
+        max_tokens: 1024,
+        temperature: 0.3,
+        response_format: { type: "json_object" },
+        messages: [
+          { role: "system", content: SYNTH_PROMPT },
+          {
+            role: "user",
+            content:
+              `Recent transcript:\n${recentText}\n\n` +
+              `Research answer:\n${researchAnswer || "(no direct answer)"}\n\n` +
+              `Sources:\n${sourcesBlock || "(no sources)"}`,
+          },
+        ],
+      }),
+    );
     raw = completion.choices[0]?.message?.content?.trim() || "";
   } catch (err) {
     logger.error({ err }, "[INSIGHT-ENGINE] synth LLM call failed");
