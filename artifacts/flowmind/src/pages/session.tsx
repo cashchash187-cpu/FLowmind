@@ -865,7 +865,11 @@ export default function SessionLive() {
                   size="sm"
                   className="rounded-xl h-9 px-4 gap-2 font-mono text-xs font-bold uppercase tracking-wider"
                   onClick={speech.isListening ? speech.stop : speech.isConnecting ? undefined : speech.start}
-                  disabled={!speech.isSupported || speech.isConnecting}
+                  // Only disable while the WS is actually connecting. If the
+                  // browser doesn't support STT we still let the click fire so
+                  // the user gets the explicit error toast/banner instead of
+                  // staring at a dead button.
+                  disabled={speech.isConnecting}
                   data-testid="button-mic-toggle"
                 >
                   {speech.isListening ? (

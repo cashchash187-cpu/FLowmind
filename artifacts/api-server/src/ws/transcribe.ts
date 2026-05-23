@@ -29,6 +29,7 @@ export function attachWsTranscribe(server: Server) {
   });
 
   wss.on("connection", async (ws: WebSocket, req: IncomingMessage) => {
+    logger.info({ ip: req.socket.remoteAddress }, "[WS] client connected");
     // ── Auth ──────────────────────────────────────────────────────────────────
     const url = new URL(req.url ?? "", `http://${req.headers.host}`);
     const token =
@@ -98,12 +99,24 @@ export function attachWsTranscribe(server: Server) {
       }
     }
 
-    ws.on("message", async (data) => {
+    ws.on("message", async (data, isBinary) => {
       if (closed) return;
 
-      if (typeof data === "string") {
+      // ws@8 hands EVERY frame back as a Buffer regardless of opcode. We have
+      // to use the `isBinary` flag — `typeof data === "string"` is always
+      // false here, which is the bug that made init messages disappear and
+      // left the client stuck on "connecting".
+      if (!isBinary) {
+        const text = typeof data === "string"
+          ? data
+          : Buffer.isBuffer(data)
+            ? data.toString("utf8")
+            : Array.isArray(data)
+              ? Buffer.concat(data).toString("utf8")
+              : Buffer.from(data as ArrayBuffer).toString("utf8");
+
         let msg: WsMsg;
-        try { msg = JSON.parse(data); } catch { return; }
+        try { msg = JSON.parse(text); } catch { return; }
 
         if (msg.type === "init" && msg.sessionId) {
           sessionId = msg.sessionId;
@@ -170,6 +183,7 @@ export function attachWsTranscribe(server: Server) {
               onClose: () => closeAll(),
             });
             ws.send(JSON.stringify({ type: "ready" }));
+            logger.info({ userId: user.id, sessionId, language }, "[WS] STT ready");
           } catch (err) {
             logger.error({ err }, "[WS] Failed to open STT session");
             ws.send(JSON.stringify({ type: "error", reason: "stt", message: "Failed to connect to transcription service." }));
@@ -179,19 +193,16 @@ export function attachWsTranscribe(server: Server) {
         return;
       }
 
-      // Binary audio frame
-      if (sttSession && Buffer.isBuffer(data)) {
-        sttSession.sendAudio(data);
-        // ~1 frame = ~100ms of audio (20ms chunks from MediaRecorder)
-        audioSeconds += 0.1;
-      } else if (sttSession && data instanceof Buffer) {
-        sttSession.sendAudio(data);
-        audioSeconds += 0.1;
-      } else if (sttSession) {
-        const buf = Buffer.from(data as ArrayBuffer);
-        sttSession.sendAudio(buf);
-        audioSeconds += 0.1;
-      }
+      // Binary audio frame (isBinary === true)
+      if (!sttSession) return;
+      const buf = Buffer.isBuffer(data)
+        ? data
+        : Array.isArray(data)
+          ? Buffer.concat(data)
+          : Buffer.from(data as ArrayBuffer);
+      sttSession.sendAudio(buf);
+      // ~1 frame = ~100ms of audio (100ms chunks from MediaRecorder)
+      audioSeconds += 0.1;
     });
 
     ws.on("close", async () => {

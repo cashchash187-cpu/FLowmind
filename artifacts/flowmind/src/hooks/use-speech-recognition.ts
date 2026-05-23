@@ -126,10 +126,33 @@ export function useSpeechRecognition({
     }
   }, []);
 
-  const startRecognition = useCallback(() => {
+  const startRecognition = useCallback(async () => {
     const Ctor = getSpeechRecognitionCtor();
     if (!Ctor) {
-      setError("Speech recognition requires Chrome or Edge.");
+      setError("Browser transcription requires Chrome, Edge or another Chromium-based browser.");
+      return;
+    }
+
+    // Explicitly request mic permission first. The Web Speech API silently
+    // fails when permission is denied or never prompted, which is why some
+    // users saw "Start Mic" do absolutely nothing.
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      // We don't need the raw track — SpeechRecognition opens its own pipeline.
+      // Stop it immediately so the OS mic indicator doesn't stick around.
+      stream.getTracks().forEach((t) => t.stop());
+      setPermissionState("granted");
+    } catch (err: unknown) {
+      const name = err instanceof Error ? err.name : "";
+      if (name === "NotAllowedError" || name === "SecurityError") {
+        setPermissionState("denied");
+        setError("Microphone access denied. Click the lock icon in your address bar to allow it, then try again.");
+      } else if (name === "NotFoundError" || name === "OverconstrainedError") {
+        setError("No microphone detected. Plug one in or pick a different input device.");
+      } else {
+        setError(`Could not access microphone${err instanceof Error ? `: ${err.message}` : ""}.`);
+      }
+      shouldRestartRef.current = false;
       return;
     }
 

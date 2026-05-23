@@ -41,8 +41,9 @@ router.use(usageRouter);
 router.use(transcribeRouter);
 router.use(researchRouter);
 
-// 7. Admin routes (admin-only after requireAuth)
-router.use(requireAdmin);
+// 7. Admin routes — requireAdmin is path-scoped to /admin/* so unknown paths
+// fall through to a 404 for normal users instead of leaking a misleading 403.
+router.use("/admin", requireAdmin);
 router.use(adminRouter);
 
 export default router;

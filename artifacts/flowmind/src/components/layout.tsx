@@ -46,7 +46,7 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
   const { user, clearAuth } = useAuthStore();
 
   const navItems = [
-    { href: "/", label: "Home", icon: Home, testId: "link-nav-dashboard" },
+    { href: "/", label: "Home", icon: Home, testId: "link-nav-home" },
     { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, testId: "link-nav-dashboard" },
     { href: "/history", label: "History", icon: History, testId: "link-nav-history" },
     { href: "/settings", label: "Settings", icon: Settings, testId: "link-nav-settings" },

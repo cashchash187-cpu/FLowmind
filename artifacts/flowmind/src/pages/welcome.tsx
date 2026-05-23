@@ -267,13 +267,12 @@ function LiveSessionDemo({ reduced }: { reduced: boolean }) {
 export default function WelcomePage() {
   const { user } = useAuthStore();
   const [, setLocation] = useLocation();
-  const { startTour } = useAppTour();
+  const { startTour, shouldAutoStart } = useAppTour();
   const [recentSessions, setRecentSessions] = useState<RecentSession[]>([]);
   const [loading, setLoading] = useState(true);
   const prefersReduced = useReducedMotion() ?? false;
 
   const firstName = user?.displayName?.split(" ")[0] ?? user?.username ?? "there";
-  const isFirstTime = !localStorage.getItem("fm_tour_done");
 
   useEffect(() => {
     apiFetch("/api/sessions/recent")
@@ -283,13 +282,16 @@ export default function WelcomePage() {
       .finally(() => setLoading(false));
   }, []);
 
+  // Auto-fire the tour ONLY on the first welcome-page visit per user. The flag
+  // is set inside startTour() before the driver mounts, so even if the user
+  // navigates away mid-tour they won't see it again next login.
   useEffect(() => {
-    if (isFirstTime && !loading) {
+    if (shouldAutoStart && !loading && user) {
       const t = setTimeout(() => startTour(), 900);
       return () => clearTimeout(t);
     }
     return undefined;
-  }, [isFirstTime, loading, startTour]);
+  }, [shouldAutoStart, loading, user, startTour]);
 
   const lastSession = recentSessions[0];
   const hasHistory = recentSessions.length > 0;
@@ -359,10 +361,7 @@ export default function WelcomePage() {
                 variant="ghost"
                 size="lg"
                 className="gap-2 h-12 px-7 rounded-xl pointer-events-auto"
-                onClick={() => {
-                  try { localStorage.setItem("fm_tour_done", ""); } catch {}
-                  startTour();
-                }}
+                onClick={() => startTour()}
               >
                 <Sparkles className="h-4 w-4" aria-hidden />
                 Take the 60-second tour

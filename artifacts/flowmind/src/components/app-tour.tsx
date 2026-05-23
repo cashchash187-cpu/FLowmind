@@ -1,13 +1,28 @@
 import { useCallback, useContext, createContext } from "react";
+import { useAuthStore } from "@/lib/auth";
 
 interface TourContextValue {
+  /** Run the tour. Marks the per-user "done" flag so it won't auto-fire again. */
   startTour: () => void;
+  /** True if the current user has never seen the tour in this browser. */
+  shouldAutoStart: boolean;
+  /** Clears the per-user "done" flag so the next visit auto-fires the tour again. */
+  resetTourFlag: () => void;
 }
 
-const TourContext = createContext<TourContextValue>({ startTour: () => {} });
+const TourContext = createContext<TourContextValue>({
+  startTour: () => {},
+  shouldAutoStart: false,
+  resetTourFlag: () => {},
+});
 
 export function useAppTour() {
   return useContext(TourContext);
+}
+
+/** Per-user localStorage key — global key leaks tour state across accounts. */
+function tourKey(userId: number | null | undefined) {
+  return userId ? `fm_tour_done:${userId}` : "fm_tour_done:anon";
 }
 
 const TOUR_STEPS = [
@@ -66,7 +81,17 @@ const TOUR_STEPS = [
 ];
 
 export function AppTourProvider({ children }: { children: React.ReactNode }) {
+  const userId = useAuthStore((s) => s.user?.id ?? null);
+  const key = tourKey(userId);
+
+  // Re-evaluated on every render so callers (like welcome.tsx) get the live
+  // value after the tour finishes and we write the flag.
+  const shouldAutoStart = typeof window !== "undefined" && !localStorage.getItem(key);
+
   const startTour = useCallback(async () => {
+    // Mark BEFORE the tour fires so closing the browser / hitting ESC still
+    // counts as "seen". The user can replay it from welcome page if they want.
+    try { localStorage.setItem(key, "1"); } catch {}
     try {
       const { driver } = await import("driver.js");
       await import("driver.js/dist/driver.css");
@@ -81,9 +106,6 @@ export function AppTourProvider({ children }: { children: React.ReactNode }) {
         prevBtnText: "← Back",
         doneBtnText: "Get started →",
         smoothScroll: true,
-        onDestroyed: () => {
-          localStorage.setItem("fm_tour_done", "1");
-        },
         steps: TOUR_STEPS.map((step) => ({
           element: (step as any).element,
           popover: { ...step.popover },
@@ -94,10 +116,14 @@ export function AppTourProvider({ children }: { children: React.ReactNode }) {
     } catch (err) {
       console.warn("Tour init failed:", err);
     }
-  }, []);
+  }, [key]);
+
+  const resetTourFlag = useCallback(() => {
+    try { localStorage.removeItem(key); } catch {}
+  }, [key]);
 
   return (
-    <TourContext.Provider value={{ startTour }}>
+    <TourContext.Provider value={{ startTour, shouldAutoStart, resetTourFlag }}>
       {children}
     </TourContext.Provider>
   );
