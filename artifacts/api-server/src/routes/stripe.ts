@@ -5,6 +5,8 @@ import { stripeStorage } from "../stripeStorage";
 const router: IRouter = Router();
 
 function getBaseUrl(req: Request): string {
+  if (process.env.PUBLIC_BASE_URL) return process.env.PUBLIC_BASE_URL.replace(/\/$/, "");
+  if (process.env.RAILWAY_PUBLIC_DOMAIN) return `https://${process.env.RAILWAY_PUBLIC_DOMAIN}`;
   const domains = process.env.REPLIT_DOMAINS?.split(",")[0];
   if (domains) return `https://${domains}`;
   const proto = req.headers["x-forwarded-proto"] || req.protocol;

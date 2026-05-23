@@ -3,17 +3,17 @@ import app from "./app";
 import { logger } from "./lib/logger";
 import { attachWsTranscribe } from "./ws/transcribe";
 
-const rawPort = process.env["PORT"];
-
-if (!rawPort) {
-  throw new Error("PORT environment variable is required but was not provided.");
-}
+// Railway injects PORT. Locally we fall back to 8080 so `pnpm dev` keeps working
+// without ceremony.
+const rawPort = process.env["PORT"] ?? "8080";
 
 const port = Number(rawPort);
 
 if (Number.isNaN(port) || port <= 0) {
   throw new Error(`Invalid PORT value: "${rawPort}"`);
 }
+
+const host = process.env["HOST"] ?? "0.0.0.0";
 
 async function initStripe() {
   try {
@@ -28,12 +28,13 @@ async function initStripe() {
 
     const stripeSync = await getStripeSync();
 
-    const domains = process.env.REPLIT_DOMAINS?.split(",")[0];
-    if (domains) {
-      await stripeSync.findOrCreateManagedWebhook(
-        `https://${domains}/api/stripe/webhook`
-      );
-      logger.info("Stripe webhook configured");
+    const publicDomain =
+      process.env.PUBLIC_BASE_URL ||
+      (process.env.RAILWAY_PUBLIC_DOMAIN ? `https://${process.env.RAILWAY_PUBLIC_DOMAIN}` : null) ||
+      (process.env.REPLIT_DOMAINS ? `https://${process.env.REPLIT_DOMAINS.split(",")[0]}` : null);
+    if (publicDomain) {
+      await stripeSync.findOrCreateManagedWebhook(`${publicDomain}/api/stripe/webhook`);
+      logger.info({ publicDomain }, "Stripe webhook configured");
     }
 
     stripeSync.syncBackfill().catch((err) =>
@@ -60,8 +61,8 @@ const server = http.createServer(app);
 // Attach WebSocket transcription endpoint
 attachWsTranscribe(server);
 
-server.listen(port, () => {
-  logger.info({ port }, "Server listening");
+server.listen(port, host, () => {
+  logger.info({ host, port }, "Server listening");
 });
 
 server.on("error", (err) => {

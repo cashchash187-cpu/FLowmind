@@ -2,6 +2,9 @@ import express, { type Express } from "express";
 import cors from "cors";
 import cookieParser from "cookie-parser";
 import pinoHttp from "pino-http";
+import path from "node:path";
+import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import router from "./routes";
 import { logger } from "./lib/logger";
 import { WebhookHandlers } from "./webhookHandlers";
@@ -60,5 +63,32 @@ app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
 app.use("/api", router);
+
+// ── Railway-friendly health endpoint (no /api prefix) ─────────────────────────
+app.get("/health", (_req, res) => {
+  res.json({ status: "ok" });
+});
+
+// ── Serve the React build (single-origin Railway deploy) ──────────────────────
+// The Docker build copies the frontend dist into ./public next to the bundle.
+// PUBLIC_DIR can override the path (handy for `node dist/index.mjs` from repo root).
+const HERE = path.dirname(fileURLToPath(import.meta.url));
+const publicDir = process.env.PUBLIC_DIR
+  ? path.resolve(process.env.PUBLIC_DIR)
+  : path.resolve(HERE, "public");
+
+if (fs.existsSync(publicDir)) {
+  logger.info({ publicDir }, "Serving static frontend");
+  app.use(express.static(publicDir, { index: false, maxAge: "1h" }));
+
+  // SPA fallback for any non-/api GET that didn't match a file above.
+  app.get(/^\/(?!api(?:\/|$)).*/, (_req, res, next) => {
+    const indexHtml = path.join(publicDir, "index.html");
+    if (!fs.existsSync(indexHtml)) return next();
+    res.sendFile(indexHtml);
+  });
+} else {
+  logger.warn({ publicDir }, "Frontend dist not found — serving API only");
+}
 
 export default app;

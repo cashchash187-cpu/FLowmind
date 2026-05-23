@@ -1,7 +1,19 @@
 import jwt from "jsonwebtoken";
 import { randomUUID, randomBytes } from "crypto";
 
-const SECRET = process.env.JWT_SECRET ?? "flowmind-dev-secret-change-in-prod";
+// New canonical name: AUTH_JWT_SECRET. Legacy JWT_SECRET kept for older deploys.
+// In production the secret MUST be configured — we refuse to start with the
+// dev fallback so we never sign tokens with a known-bad value in the wild.
+const SECRET = (() => {
+  const fromEnv = process.env.AUTH_JWT_SECRET ?? process.env.JWT_SECRET;
+  if (fromEnv && fromEnv.length >= 16) return fromEnv;
+  if (process.env.NODE_ENV === "production") {
+    throw new Error(
+      "AUTH_JWT_SECRET is required in production (>=16 chars). Refusing to start with a dev fallback.",
+    );
+  }
+  return "flowmind-dev-secret-change-in-prod";
+})();
 const EXPIRY = "7d";
 
 export interface JwtPayload {
