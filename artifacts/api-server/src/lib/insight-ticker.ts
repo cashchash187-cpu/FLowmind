@@ -6,11 +6,11 @@ import { isResearchAvailable, research } from "./research-provider";
 import { getPlanLimits } from "./plans";
 import { logger } from "./logger";
 
-const TICK_INTERVAL_MS = 10_000;        // check every 10s
-const MIN_CHARS_SINCE_LAST = 150;       // >=150 new chars of speech required
-const MIN_SECONDS_SINCE_LAST = 25;      // >=25s between insights (also protects free-tier LLM quota)
-const HEARTBEAT_STALE_MS = 60_000;      // session considered idle if hb > 60s ago
-const RECENT_TRANSCRIPT_CHARS = 800;    // chars of recent speech to send to the LLM
+const TICK_INTERVAL_MS = 8_000;         // check every 8s — closer to the "every 15s" feel the user wants
+const MIN_CHARS_SINCE_LAST = 60;        // >=60 new chars of speech required (was 150 — too gated)
+const MIN_SECONDS_SINCE_LAST = 15;      // >=15s between insights (also protects free-tier LLM quota)
+const HEARTBEAT_STALE_MS = 90_000;      // session considered idle if hb > 90s ago
+const RECENT_TRANSCRIPT_CHARS = 1600;   // chars of recent speech to send to the LLM
 
 const LOG_INTERVAL_MS = 5 * 60 * 1000;
 

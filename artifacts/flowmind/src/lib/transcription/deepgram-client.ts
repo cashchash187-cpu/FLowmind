@@ -40,6 +40,24 @@ export class DeepgramStreamClient {
   }
 
   private async openMic(): Promise<void> {
+    // Probe permission state first so we don't trigger the OS "mic granted"
+    // banner unnecessarily on every restart (Android Chrome shows it every
+    // time a getUserMedia call lands, even when permission is already
+    // granted). When the state is already "granted" we still need a stream,
+    // but at least the prompt doesn't show.
+    try {
+      if (navigator.permissions) {
+        const status = await navigator.permissions.query({ name: "microphone" as PermissionName });
+        if (status.state === "denied") {
+          const msg = "Microphone access is blocked. Open the address-bar lock icon to allow it, then try again.";
+          this.callbacks.onError(msg);
+          throw new Error(msg);
+        }
+      }
+    } catch {
+      // Permissions API not supported on this browser — fall through to direct getUserMedia.
+    }
+
     try {
       this.stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
     } catch (err) {

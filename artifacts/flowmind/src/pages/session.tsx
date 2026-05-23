@@ -326,8 +326,10 @@ export default function SessionLive() {
 
   const speech = useTranscription({
     sessionId,
-    // Deepgram auto-detects language — only pass an explicit language for browser STT
-    language: forceEngine !== "browser" && isPro ? "auto" : language,
+    // Pass the user's choice through to both engines. Deepgram maps "auto" to
+    // its multilingual model; browser STT falls back to the system default
+    // when "auto" is picked.
+    language,
     onFinalChunk: handleFinalChunk,
     sessionBaseTime: session?.createdAt ? new Date(session.createdAt).getTime() : undefined,
     forceEngine,
@@ -604,15 +606,17 @@ export default function SessionLive() {
                 <DropdownMenuSeparator />
                 <div className="px-2 py-1 text-[10px] text-muted-foreground/50 leading-relaxed">
                   {speech.engine === "deepgram"
-                    ? "Deepgram AI · auto-detects language"
-                    : "Browser speech API · select language below"}
+                    ? "Deepgram nova-3 · multilingual"
+                    : "Browser speech API · system default"}
                 </div>
               </DropdownMenuContent>
             </DropdownMenu>
           )}
 
-          {/* Language selector — only for browser STT (Deepgram auto-detects) */}
-          {isSessionActive && speech.engine === "browser" && (
+          {/* Language selector — visible for both engines. "Auto-detect" maps
+              to Deepgram's multilingual model; browser STT uses the system
+              default in that case. */}
+          {isSessionActive && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" size="sm" className="gap-1.5 font-mono text-xs h-8 px-2" title="Language">
@@ -623,7 +627,7 @@ export default function SessionLive() {
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="font-mono text-xs">
-                {LANGUAGE_OPTIONS.filter(l => l.code !== "auto").map((l, i) => (
+                {LANGUAGE_OPTIONS.map((l) => (
                   <DropdownMenuItem
                     key={l.code}
                     onClick={() => {
@@ -855,21 +859,32 @@ export default function SessionLive() {
             </ScrollArea>
           </div>
 
-          {/* Bottom control bar */}
-          {isSessionActive && (
-            <div className="absolute bottom-5 left-0 right-0 flex flex-col items-center gap-2 px-4">
-              <div className="flex items-center gap-2 bg-background/90 backdrop-blur-xl border border-border rounded-2xl px-3 py-2 shadow-lg shadow-black/5">
+          {/* Bottom control bar — visible for active AND idle sessions so the
+              user can always restart the mic (clicking Start Mic on an idle
+              session implicitly resumes it first). */}
+          {(isSessionActive || session.status === "idle") && (
+            <div className="absolute bottom-3 sm:bottom-5 left-0 right-0 flex flex-col items-center gap-2 px-2 sm:px-4">
+              <div className="flex items-center gap-2 bg-background/90 backdrop-blur-xl border border-border rounded-2xl px-3 py-2 shadow-lg shadow-black/5 max-w-full overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden">
                 {/* Mic toggle */}
                 <Button
                   variant={speech.isListening ? "destructive" : "default"}
                   size="sm"
                   className="rounded-xl h-9 px-4 gap-2 font-mono text-xs font-bold uppercase tracking-wider"
-                  onClick={speech.isListening ? speech.stop : speech.isConnecting ? undefined : speech.start}
+                  onClick={async () => {
+                    if (speech.isListening) { speech.stop(); return; }
+                    if (speech.isConnecting) return;
+                    // Auto-resume idle sessions before starting the mic, so a
+                    // returning user doesn't have to hunt for the resume modal.
+                    if (session.status === "idle") {
+                      try { await resumeSession.mutateAsync(); } catch { /* surface via mutation state */ }
+                    }
+                    speech.start();
+                  }}
                   // Only disable while the WS is actually connecting. If the
                   // browser doesn't support STT we still let the click fire so
                   // the user gets the explicit error toast/banner instead of
                   // staring at a dead button.
-                  disabled={speech.isConnecting}
+                  disabled={speech.isConnecting || resumeSession.isPending}
                   data-testid="button-mic-toggle"
                 >
                   {speech.isListening ? (
@@ -924,8 +939,9 @@ export default function SessionLive() {
             </div>
           )}
 
-          {/* Ended state */}
-          {!isSessionActive && (dbTranscripts?.length ?? 0) > 0 && (
+          {/* Ended state — only show on truly ended sessions (idle sessions
+              now keep the bottom bar so users can resume). */}
+          {session.status === "ended" && (dbTranscripts?.length ?? 0) > 0 && (
             <div className="absolute bottom-6 left-0 right-0 flex justify-center px-4">
               <Link href={`/session/${sessionId}/notes`}>
                 <Button className="gap-2 font-mono text-xs uppercase tracking-wider rounded-full shadow-xl">
@@ -938,10 +954,25 @@ export default function SessionLive() {
         </div>
 
         {/* Insight stream side panel */}
-        {insightPanelOpen && isInsightMode && (
-          <div className="hidden md:flex flex-col w-80 border-l border-border/40 bg-card/50 backdrop-blur overflow-y-auto p-4 shrink-0">
-            <InsightStream sessionId={sessionId} />
-          </div>
+        {/* Insight panel — sidebar on desktop, full slide-over Sheet on mobile
+            so insight-mode actually works on a phone. */}
+        {isInsightMode && insightPanelOpen && (
+          <>
+            <div className="hidden md:flex flex-col w-80 border-l border-border/40 bg-card/50 backdrop-blur overflow-y-auto p-4 shrink-0">
+              <InsightStream sessionId={sessionId} />
+            </div>
+            <Sheet open={insightPanelOpen} onOpenChange={setInsightPanelOpen}>
+              <SheetContent
+                side="right"
+                className="md:hidden w-[88vw] max-w-sm p-0 border-l border-primary/20 bg-card/95 backdrop-blur-xl"
+              >
+                <SheetTitle className="sr-only">Insight Stream</SheetTitle>
+                <div className="h-full overflow-y-auto p-4">
+                  <InsightStream sessionId={sessionId} />
+                </div>
+              </SheetContent>
+            </Sheet>
+          </>
         )}
 
         {/* Research panel — copilot: Sheet slide-over; insight: right column */}

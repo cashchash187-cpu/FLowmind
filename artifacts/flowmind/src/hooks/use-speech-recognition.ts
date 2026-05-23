@@ -133,27 +133,48 @@ export function useSpeechRecognition({
       return;
     }
 
-    // Explicitly request mic permission first. The Web Speech API silently
-    // fails when permission is denied or never prompted, which is why some
-    // users saw "Start Mic" do absolutely nothing.
+    // Use the Permissions API to know whether we already have mic access
+    // BEFORE opening a stream. Opening getUserMedia on every start was
+    // re-triggering the Android "mic in use" banner on every restart, which
+    // the user reported as a permission popup looping nonstop.
+    let permState: PermissionState | "unsupported" = "unsupported";
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      // We don't need the raw track — SpeechRecognition opens its own pipeline.
-      // Stop it immediately so the OS mic indicator doesn't stick around.
-      stream.getTracks().forEach((t) => t.stop());
-      setPermissionState("granted");
-    } catch (err: unknown) {
-      const name = err instanceof Error ? err.name : "";
-      if (name === "NotAllowedError" || name === "SecurityError") {
-        setPermissionState("denied");
-        setError("Microphone access denied. Click the lock icon in your address bar to allow it, then try again.");
-      } else if (name === "NotFoundError" || name === "OverconstrainedError") {
-        setError("No microphone detected. Plug one in or pick a different input device.");
-      } else {
-        setError(`Could not access microphone${err instanceof Error ? `: ${err.message}` : ""}.`);
+      if (navigator.permissions) {
+        const status = await navigator.permissions.query({ name: "microphone" as PermissionName });
+        permState = status.state;
+        setPermissionState(status.state as typeof permissionState);
       }
+    } catch {
+      // Some browsers (older Safari) don't expose "microphone" — fall through.
+    }
+
+    if (permState === "denied") {
+      setError("Microphone access is blocked. Open the address-bar lock icon to allow it, then try again.");
       shouldRestartRef.current = false;
       return;
+    }
+
+    if (permState !== "granted") {
+      // We don't know if mic is granted, so trigger the prompt ONCE by
+      // opening + immediately closing a stream. This is the only place the
+      // OS popup should appear.
+      try {
+        const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        stream.getTracks().forEach((t) => t.stop());
+        setPermissionState("granted");
+      } catch (err: unknown) {
+        const name = err instanceof Error ? err.name : "";
+        if (name === "NotAllowedError" || name === "SecurityError") {
+          setPermissionState("denied");
+          setError("Microphone access denied. Click the lock icon in your address bar to allow it, then try again.");
+        } else if (name === "NotFoundError" || name === "OverconstrainedError") {
+          setError("No microphone detected. Plug one in or pick a different input device.");
+        } else {
+          setError(`Could not access microphone${err instanceof Error ? `: ${err.message}` : ""}.`);
+        }
+        shouldRestartRef.current = false;
+        return;
+      }
     }
 
     const recognition = new Ctor();

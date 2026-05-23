@@ -81,12 +81,22 @@ const TOUR_STEPS = [
 ];
 
 export function AppTourProvider({ children }: { children: React.ReactNode }) {
-  const userId = useAuthStore((s) => s.user?.id ?? null);
+  const user = useAuthStore((s) => s.user);
+  const userId = user?.id ?? null;
   const key = tourKey(userId);
 
-  // Re-evaluated on every render so callers (like welcome.tsx) get the live
-  // value after the tour finishes and we write the flag.
-  const shouldAutoStart = typeof window !== "undefined" && !localStorage.getItem(key);
+  // Server-side truth: lastLoginAt is the value BEFORE the login that issued
+  // the current token (see /api/auth/login — it reads the user row then
+  // updates lastLoginAt, so the response carries the previous timestamp).
+  // null => first login ever. Anything else => returning user.
+  const isFirstLoginEver = !!user && !user.lastLoginAt;
+
+  // Tab-local guard so the tour doesn't double-fire if the welcome page
+  // remounts inside the same first-login session.
+  const shouldAutoStart =
+    isFirstLoginEver &&
+    typeof window !== "undefined" &&
+    !localStorage.getItem(key);
 
   const startTour = useCallback(async () => {
     // Mark BEFORE the tour fires so closing the browser / hitting ESC still

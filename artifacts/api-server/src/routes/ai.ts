@@ -22,8 +22,10 @@ import { getPlanLimits } from "../lib/plans";
 
 const router: IRouter = Router();
 
-const MAX_RAW_LINES = 12;
-const SUMMARIZE_THRESHOLD = 20;
+// Feed enough recent context that the model can answer questions referring to
+// things said minutes earlier, not just the last 2-3 sentences.
+const MAX_RAW_LINES = 40;
+const SUMMARIZE_THRESHOLD = 60;
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -49,9 +51,9 @@ async function buildRollingContext(sessionId: number): Promise<string> {
     try {
       const summary = await openai.chat.completions.create({
         model: LLM_MODEL,
-        max_tokens: 300,
+        max_tokens: 800,
         messages: [
-          { role: "system", content: "Summarise the following conversation excerpt in 2-4 sentences. Be factual and concise. Preserve key decisions, facts, and names." },
+          { role: "system", content: "Summarise the following conversation excerpt in 4-7 sentences. Be factual and dense. Preserve every concrete entity: names, companies, numbers, decisions, open questions, and the chronological flow." },
           { role: "user", content: olderRaw },
         ],
       });
@@ -93,11 +95,15 @@ async function getOwnedSession(sessionId: number, userId: number, isAdmin: boole
 
 const LANGUAGE_RULE = `Respond in the exact same language as the conversation. If the conversation is in German, respond in German. If in English, respond in English. Never switch languages.`;
 
+const CONTEXT_RULE = `You receive the FULL recent transcript, not just the last sentence. When the latest question references something the speakers discussed earlier (a company, a number, a decision, a name) you MUST scan the whole excerpt and pull that thread back in. Don't reduce your answer to whatever the very last words were.`;
+
+const COMPLETENESS_RULE = `Always deliver a COMPLETE sentence. Never end with an ellipsis or a half-finished phrase. If a thought needs two sentences, write two — concise but finished.`;
+
 const MODE_PROMPTS: Record<string, string> = {
-  objection: `You are a sharp, strategic conversation coach. Based on the conversation context, generate ONE precise and compelling response the listener could say RIGHT NOW. It should be a counterpoint, intelligent question, reframe, or strategic observation that advances the conversation. Be direct and specific — not generic. Output ONLY the suggested line to say, nothing else. Keep it under 40 words. ${LANGUAGE_RULE}`,
-  answer: `You are a knowledgeable assistant. A question was just asked or a topic raised in the conversation. Generate a clear, confident, and concise answer that the listener could give. Be factual and specific. Output ONLY the response to deliver, nothing else. Keep it under 50 words. ${LANGUAGE_RULE}`,
-  explain: `You are an expert commentator. Based on the conversation, provide a brief but insightful background explanation, definition, or context that would deepen understanding. Output ONLY the explanation text, nothing else. Keep it under 60 words. ${LANGUAGE_RULE}`,
-  logic_check: `You are a critical thinking expert. Analyse the conversation and identify the most significant logical gap, hidden assumption, contradiction, or unsupported claim. Be specific. Output ONLY a one-sentence observation starting with a description of the issue. Keep it under 40 words. ${LANGUAGE_RULE}`,
+  objection: `You are a sharp, strategic conversation coach. Generate ONE precise and compelling line the listener could say RIGHT NOW — a counterpoint, intelligent question, reframe, or strategic observation that advances the conversation. Direct and specific, not generic. Output ONLY the suggested line, nothing else. Keep it 1-2 complete sentences, max ~50 words. ${LANGUAGE_RULE} ${CONTEXT_RULE} ${COMPLETENESS_RULE}`,
+  answer: `You are a knowledgeable assistant. A question was just asked or a topic raised. Generate a clear, confident answer the listener could give. Be factual and specific — when the question refers to something said earlier in the conversation, pull that context in instead of just answering the literal last sentence. Output ONLY the response to deliver. Keep it 1-3 complete sentences, max ~70 words. ${LANGUAGE_RULE} ${CONTEXT_RULE} ${COMPLETENESS_RULE}`,
+  explain: `You are an expert commentator. Provide a brief but insightful background explanation, definition, or context that deepens understanding of what's being discussed. Output ONLY the explanation. Keep it 1-3 complete sentences, max ~80 words. ${LANGUAGE_RULE} ${CONTEXT_RULE} ${COMPLETENESS_RULE}`,
+  logic_check: `You are a critical thinking expert. Identify the most significant logical gap, hidden assumption, contradiction, or unsupported claim in the recent conversation. Be specific. Output ONLY the observation. Keep it 1-2 complete sentences, max ~50 words. ${LANGUAGE_RULE} ${CONTEXT_RULE} ${COMPLETENESS_RULE}`,
 };
 
 const MODE_REASONING: Record<string, string> = {
@@ -142,7 +148,12 @@ router.post("/sessions/:id/ai-assist", async (req, res): Promise<void> => {
   try {
     const completion = await openai.chat.completions.create({
       model: LLM_MODEL,
-      max_tokens: 200,
+      // Gemini 2.5 Flash silently consumes part of the token budget on
+      // reasoning; 200 tokens left almost nothing for the actual answer,
+      // which is why responses came back cut off mid-sentence. 1024 is
+      // generous enough to always render a complete reply.
+      max_tokens: 1024,
+      temperature: 0.5,
       messages: [
         { role: "system", content: systemPrompt },
         { role: "user", content: `Here is the conversation so far:\n\n${context}\n\nGenerate your response now.` },
@@ -211,7 +222,7 @@ router.post("/sessions/:id/ai-summary", async (req, res): Promise<void> => {
   try {
     const completion = await openai.chat.completions.create({
       model: LLM_MODEL,
-      max_tokens: 800,
+      max_tokens: 2048,
       response_format: { type: "json_object" },
       messages: [
         {
