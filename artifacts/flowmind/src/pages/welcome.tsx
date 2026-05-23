@@ -285,9 +285,17 @@ export default function WelcomePage() {
   // Auto-fire the tour ONLY on the first welcome-page visit per user. The flag
   // is set inside startTour() before the driver mounts, so even if the user
   // navigates away mid-tour they won't see it again next login.
+  // Extra guard inside the timer: if the user navigated to another route
+  // before the 900 ms timer expired, do NOT mount the driver overlay — that
+  // overlay would otherwise get stuck on top of an unrelated page until the
+  // first click.
   useEffect(() => {
     if (shouldAutoStart && !loading && user) {
-      const t = setTimeout(() => startTour(), 900);
+      const t = setTimeout(() => {
+        if (typeof window !== "undefined" && window.location.pathname === "/") {
+          startTour();
+        }
+      }, 900);
       return () => clearTimeout(t);
     }
     return undefined;
