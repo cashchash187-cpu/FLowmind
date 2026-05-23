@@ -155,12 +155,16 @@ export default function NewSession() {
                     >
                       <Compass className="h-6 w-6" />
                     </div>
-                    {!canUseInsight && (
-                      <Badge variant="outline" className="text-xs text-amber-600 border-amber-500/30 gap-1">
-                        <Lock className="h-2.5 w-2.5" />
-                        Pro
-                      </Badge>
-                    )}
+                    {/* Always show the Pro badge so the premium feature is
+                        visible to everyone — locked for free, plain gold
+                        for Pro users (so they see the value they're using). */}
+                    <Badge
+                      variant="outline"
+                      className="text-xs text-amber-600 border-amber-500/30 bg-amber-500/5 gap-1"
+                    >
+                      {!canUseInsight && <Lock className="h-2.5 w-2.5" />}
+                      Pro
+                    </Badge>
                   </div>
                   <div className="font-bold text-lg mb-1">Insight Mode</div>
                   <div className="text-sm text-muted-foreground font-medium leading-relaxed">

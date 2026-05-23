@@ -513,7 +513,14 @@ export default function SessionLive() {
           >
             {session.title}
           </h1>
-          <Badge variant="outline" className="flex-none font-mono text-[10px] uppercase hidden sm:flex">
+          <Badge
+            variant="outline"
+            className={`flex-none font-mono text-[10px] uppercase ${
+              session.mode === "insight"
+                ? "text-amber-600 border-amber-500/40 bg-amber-500/5"
+                : ""
+            }`}
+          >
             {session.mode}
           </Badge>
           <span className="flex-none text-xs text-muted-foreground font-mono tabular-nums">
@@ -522,22 +529,24 @@ export default function SessionLive() {
         </div>
 
         <div className="flex items-center gap-2 flex-none">
-          {/* STT engine dropdown — only on desktop; mobile users keep their
-              plan default. */}
+          {/* STT engine — visible on mobile too, just compact (icon + tiny
+              indicator). Amber/gold tint when the Pro engine is active, so
+              the user sees the upgrade payoff. */}
           {isSessionActive && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
                   variant="ghost"
                   size="sm"
-                  className={`hidden md:inline-flex gap-1.5 h-8 px-2 font-mono text-xs ${
+                  className={`gap-1.5 h-8 px-2 font-mono text-xs ${
                     speech.engine === "deepgram"
-                      ? "text-primary border border-primary/25 bg-primary/5 hover:bg-primary/10"
-                      : "text-muted-foreground border border-border/50"
+                      ? "text-amber-600 border border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/10"
+                      : "text-muted-foreground border border-border/50 hover:bg-muted/30"
                   }`}
+                  title={speech.engine === "deepgram" ? "Pro AI (Deepgram) — tap to switch" : "Browser STT — tap to switch"}
                 >
                   {speech.engine === "deepgram" ? (
-                    <span className="h-1.5 w-1.5 rounded-full bg-primary animate-pulse" />
+                    <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
                   ) : (
                     <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/50" />
                   )}
@@ -545,6 +554,7 @@ export default function SessionLive() {
                     {speech.engine === "deepgram" ? "Pro AI" : "Browser"}
                   </span>
                   <span className="hidden sm:inline text-[9px] opacity-60">STT ▾</span>
+                  <span className="sm:hidden text-[10px] font-bold uppercase tracking-wider">STT</span>
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="font-mono text-xs w-52">
@@ -766,7 +776,7 @@ export default function SessionLive() {
         <div className="flex-1 flex overflow-hidden min-h-0">
           <div className="flex-1 flex flex-col overflow-hidden">
             <ScrollArea className="flex-1 px-4 sm:px-6 py-4">
-              <div className="max-w-3xl mx-auto space-y-3 pb-64 md:pb-44">
+              <div className="max-w-3xl mx-auto space-y-3 pb-4 md:pb-44">
                 {transcriptsLoading && !optimistic.length ? (
                   <div className="space-y-4 pt-4">
                     {[1, 2, 3].map((i) => (
@@ -834,81 +844,10 @@ export default function SessionLive() {
             </ScrollArea>
           </div>
 
-          {/* Bottom control bar — visible for active AND idle sessions so the
-              user can always restart the mic (clicking Start Mic on an idle
-              session implicitly resumes it first). */}
+          {/* Bottom control bar — DESKTOP ONLY here. Mobile bar lives further
+              down as a sibling of the insight dock so they don't overlap. */}
           {(isSessionActive || session.status === "idle") && (
             <>
-              {/* ─── MOBILE bottom bar — vertical stack, big touch targets ───
-                   Row 1: AI modes as a 4-up grid with full labels
-                   Row 2: Big Mic button with visualizer
-                   Row 3: Tiny status hint
-                   Used below md breakpoint only. */}
-              <div className="md:hidden absolute bottom-0 left-0 right-0 px-3 pb-3 pt-2 bg-gradient-to-t from-background via-background/95 to-transparent">
-                <div className="flex flex-col gap-2 max-w-md mx-auto">
-                  {/* AI mode grid */}
-                  <div className="grid grid-cols-4 gap-1.5 bg-card/90 backdrop-blur-xl border border-border rounded-2xl p-2 shadow-lg shadow-black/10">
-                    {AI_MODES.map(({ mode, label, icon: Icon }) => (
-                      <button
-                        key={mode}
-                        type="button"
-                        onClick={() => handleAiAssist(mode)}
-                        disabled={requestAi.isPending}
-                        className="flex flex-col items-center gap-1 py-2 rounded-xl hover:bg-primary/10 active:bg-primary/15 hover:text-primary disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
-                        data-testid={`button-ai-${mode}`}
-                      >
-                        <Icon className="h-5 w-5" />
-                        <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">
-                          {label}
-                        </span>
-                      </button>
-                    ))}
-                  </div>
-
-                  {/* Big mic + visualizer */}
-                  <div className="flex items-center gap-3 bg-card/90 backdrop-blur-xl border border-border rounded-2xl px-3 py-2 shadow-lg shadow-black/10">
-                    <Button
-                      variant={speech.isListening ? "destructive" : "default"}
-                      className="flex-1 h-14 rounded-xl gap-2 font-mono text-base font-bold uppercase tracking-wider"
-                      onClick={async () => {
-                        if (speech.isListening) { speech.stop(); return; }
-                        if (speech.isConnecting) return;
-                        if (session.status === "idle") {
-                          try { await resumeSession.mutateAsync(); } catch { /* state surfaced by mutation */ }
-                        }
-                        speech.start();
-                      }}
-                      disabled={speech.isConnecting || resumeSession.isPending}
-                      data-testid="button-mic-toggle"
-                    >
-                      {speech.isListening ? (
-                        <><MicOff className="h-5 w-5" />Stop</>
-                      ) : speech.isConnecting ? (
-                        <><Loader2 className="h-5 w-5 animate-spin" />Connecting…</>
-                      ) : (
-                        <><Mic className="h-5 w-5" />Start Mic</>
-                      )}
-                    </Button>
-                    {speech.isListening && (
-                      <div className="flex-none">
-                        <MicVisualizer isListening />
-                      </div>
-                    )}
-                    {requestAi.isPending && (
-                      <Loader2 className="h-5 w-5 animate-spin text-primary flex-none" />
-                    )}
-                  </div>
-
-                  {/* Status hint */}
-                  {allTranscripts.length > 0 && (
-                    <div className="text-center text-[10px] font-mono text-muted-foreground/50 tracking-wider uppercase">
-                      {allTranscripts.length} entr{allTranscripts.length === 1 ? "y" : "ies"} · {currentLang?.label}
-                    </div>
-                  )}
-                </div>
-              </div>
-
-              {/* ─── DESKTOP bottom bar — original horizontal pill ──────── */}
               <div className="hidden md:flex absolute bottom-5 left-0 right-0 flex-col items-center gap-2 px-4">
                 <div className="flex items-center gap-2 bg-background/90 backdrop-blur-xl border border-border rounded-2xl px-3 py-2 shadow-lg shadow-black/5">
                   {/* Mic toggle */}
@@ -994,11 +933,80 @@ export default function SessionLive() {
             <div className="hidden md:flex flex-col w-80 lg:w-96 border-l border-border/40 bg-card/50 backdrop-blur overflow-y-auto p-4 shrink-0">
               <InsightStream sessionId={sessionId} />
             </div>
-            {/* Mobile bottom dock — in normal flow, no backdrop */}
-            <div className="md:hidden flex-none h-[45vh] border-t border-border/40 bg-card/60 backdrop-blur overflow-y-auto p-3">
+            {/* Mobile insight dock — in-flow above the mobile bottom bar.
+                Shorter than before (30vh) to leave room for the bottom bar. */}
+            <div className="md:hidden flex-none h-[30vh] border-t border-border/40 bg-card/60 backdrop-blur overflow-y-auto p-3">
               <InsightStream sessionId={sessionId} />
             </div>
           </>
+        )}
+
+        {/* ─── MOBILE bottom bar — in flex flow, sits below the insight dock so
+             they no longer overlap. Sibling of the transcript wrapper. ─── */}
+        {(isSessionActive || session.status === "idle") && (
+          <div className="md:hidden flex-none px-3 pt-2 pb-3 border-t border-border/40 bg-background">
+            <div className="flex flex-col gap-2 max-w-md mx-auto">
+              {/* AI mode grid */}
+              <div className="grid grid-cols-4 gap-1.5 bg-card/90 backdrop-blur-xl border border-border rounded-2xl p-2 shadow-sm">
+                {AI_MODES.map(({ mode, label, icon: Icon }) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    onClick={() => handleAiAssist(mode)}
+                    disabled={requestAi.isPending}
+                    className="flex flex-col items-center gap-1 py-2 rounded-xl hover:bg-primary/10 active:bg-primary/15 hover:text-primary disabled:opacity-40 disabled:cursor-not-allowed transition-colors"
+                    data-testid={`button-ai-${mode}`}
+                  >
+                    <Icon className="h-5 w-5" />
+                    <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">
+                      {label}
+                    </span>
+                  </button>
+                ))}
+              </div>
+
+              {/* Big mic + visualizer */}
+              <div className="flex items-center gap-3 bg-card/90 backdrop-blur-xl border border-border rounded-2xl px-3 py-2 shadow-sm">
+                <Button
+                  variant={speech.isListening ? "destructive" : "default"}
+                  className="flex-1 h-14 rounded-xl gap-2 font-mono text-base font-bold uppercase tracking-wider"
+                  onClick={async () => {
+                    if (speech.isListening) { speech.stop(); return; }
+                    if (speech.isConnecting) return;
+                    if (session.status === "idle") {
+                      try { await resumeSession.mutateAsync(); } catch { /* state surfaced by mutation */ }
+                    }
+                    speech.start();
+                  }}
+                  disabled={speech.isConnecting || resumeSession.isPending}
+                  data-testid="button-mic-toggle"
+                >
+                  {speech.isListening ? (
+                    <><MicOff className="h-5 w-5" />Stop</>
+                  ) : speech.isConnecting ? (
+                    <><Loader2 className="h-5 w-5 animate-spin" />Connecting…</>
+                  ) : (
+                    <><Mic className="h-5 w-5" />Start Mic</>
+                  )}
+                </Button>
+                {speech.isListening && (
+                  <div className="flex-none">
+                    <MicVisualizer isListening />
+                  </div>
+                )}
+                {requestAi.isPending && (
+                  <Loader2 className="h-5 w-5 animate-spin text-primary flex-none" />
+                )}
+              </div>
+
+              {/* Status hint */}
+              {allTranscripts.length > 0 && (
+                <div className="text-center text-[10px] font-mono text-muted-foreground/50 tracking-wider uppercase">
+                  {allTranscripts.length} entr{allTranscripts.length === 1 ? "y" : "ies"} · {currentLang?.label}
+                </div>
+              )}
+            </div>
+          </div>
         )}
 
         {/* Research panel — copilot: Sheet slide-over; insight: right column */}
