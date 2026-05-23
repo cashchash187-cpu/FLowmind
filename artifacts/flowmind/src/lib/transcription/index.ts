@@ -28,6 +28,9 @@ interface UseTranscriptionOptions {
   sessionBaseTime?: number;
   /** Pro users can manually override to "browser" to force the cheaper engine */
   forceEngine?: "browser" | "deepgram";
+  /** When true (Deepgram only) the server enables speaker diarization and
+      passes back a Speaker label per final fragment. */
+  diarize?: boolean;
 }
 
 const PRO_PLANS = new Set(["pro", "business", "admin"]);
@@ -38,6 +41,7 @@ export function useTranscription({
   onFinalChunk,
   sessionBaseTime,
   forceEngine,
+  diarize = false,
 }: UseTranscriptionOptions): TranscriptionState {
   const { user } = useAuthStore();
   const usePro = PRO_PLANS.has(user?.plan ?? "") || !!user?.isAdmin;
@@ -80,11 +84,17 @@ export function useTranscription({
         setDgListening(true);
       },
       onPartial: (text) => setDgPartial(text),
-      onFinal: (text) => {
+      onFinal: (text, speaker) => {
         setDgPartial(null);
+        // When diarize is enabled the server hands us a "Speaker N" label per
+        // final fragment. When it's off we collapse everything to a single
+        // generic "Speaker" so the UI doesn't pretend it knows who spoke.
+        const speakerLabel = (diarize && speaker)
+          ? (speaker.startsWith("Speaker") ? speaker : `Speaker ${speaker}`)
+          : "Speaker";
         const chunk: LiveTranscriptChunk = {
           id: `dg-${Date.now()}-${Math.random()}`,
-          speakerLabel: "Speaker A",
+          speakerLabel,
           text,
           startMs: Date.now() - (sessionBaseTimeRef.current ?? Date.now()),
           isFinal: true,
@@ -111,7 +121,7 @@ export function useTranscription({
         setDgListening(false);
         setDgPartial(null);
       },
-    });
+    }, diarize);
     dgClientRef.current = client;
     try {
       await client.start();
@@ -119,7 +129,7 @@ export function useTranscription({
       setDgConnecting(false);
       setDgListening(false);
     }
-  }, [sessionId, language, onFinalChunk]);
+  }, [sessionId, language, onFinalChunk, diarize]);
 
   const dgStop = useCallback(() => {
     dgClientRef.current?.stop();

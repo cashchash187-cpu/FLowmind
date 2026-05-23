@@ -185,6 +185,13 @@ async function exportPDF(
     y += 2;
     addDivider();
 
+    // If diarization was off the server stamps every line as the generic
+    // "Speaker". In that case (or when only one distinct label exists) it
+    // is misleading to print speaker labels — collapse to timestamp-only.
+    const uniqueSpeakers = new Set(transcripts.map((t) => t.speakerLabel));
+    const hasMeaningfulSpeakers =
+      uniqueSpeakers.size > 1 || (uniqueSpeakers.size === 1 && !uniqueSpeakers.has("Speaker"));
+
     transcripts.forEach((t) => {
       checkPage(12);
       const mins = Math.floor(t.startMs / 60000);
@@ -193,7 +200,11 @@ async function exportPDF(
       doc.setFontSize(9);
       doc.setFont("helvetica", "bold");
       doc.setTextColor(100, 100, 100);
-      doc.text(`${t.speakerLabel}  ${timestamp}`, marginL, y);
+      doc.text(
+        hasMeaningfulSpeakers ? `${t.speakerLabel}  ${timestamp}` : timestamp,
+        marginL,
+        y,
+      );
       y += 4.5;
       addText(t.text, { size: 10, color: [40, 40, 40], lineHeight: 5.2 });
       y += 2;
@@ -534,7 +545,14 @@ export default function SessionNotes() {
               </div>
 
               {/* Full transcript preview */}
-              {(transcripts?.length ?? 0) > 0 && (
+              {(transcripts?.length ?? 0) > 0 && (() => {
+                // Hide speaker column when diarization didn't run (server
+                // tagged every line as the generic "Speaker") or when there's
+                // only one distinct speaker — saves a useless column.
+                const uniqueSpeakers = new Set(transcripts!.map((t) => t.speakerLabel));
+                const showSpeakers =
+                  uniqueSpeakers.size > 1 || (uniqueSpeakers.size === 1 && !uniqueSpeakers.has("Speaker"));
+                return (
                 <motion.div variants={item}>
                   <Card className="border-border/40 shadow-sm rounded-2xl bg-card/50 backdrop-blur-sm">
                     <CardHeader className="pb-4">
@@ -547,9 +565,11 @@ export default function SessionNotes() {
                       <div className="space-y-4 max-h-96 overflow-y-auto pr-2 scrollbar-thin">
                         {transcripts!.map((t) => (
                           <div key={t.id} className="flex gap-4 text-sm bg-muted/20 p-3 rounded-xl border border-border/20">
-                            <span className="font-mono text-[10px] uppercase font-bold text-muted-foreground min-w-[70px] pt-0.5 flex-none text-right">
-                              {t.speakerLabel}
-                            </span>
+                            {showSpeakers && (
+                              <span className="font-mono text-[10px] uppercase font-bold text-muted-foreground min-w-[70px] pt-0.5 flex-none text-right">
+                                {t.speakerLabel}
+                              </span>
+                            )}
                             <span className="text-foreground/80 font-medium leading-relaxed">{t.text}</span>
                           </div>
                         ))}
@@ -557,7 +577,8 @@ export default function SessionNotes() {
                     </CardContent>
                   </Card>
                 </motion.div>
-              )}
+                );
+              })()}
             </motion.div>
           )}
         </div>

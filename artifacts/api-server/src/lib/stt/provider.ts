@@ -5,8 +5,11 @@ export interface SttSession {
 
 export interface SttProviderOptions {
   language: string;
-  onPartial: (text: string) => void;
-  onFinal: (text: string) => void;
+  /** When true the provider enables speaker diarization and supplies a
+      speaker tag with each partial / final. */
+  diarize?: boolean;
+  onPartial: (text: string, speaker?: string | null) => void;
+  onFinal: (text: string, speaker?: string | null) => void;
   onError: (err: Error) => void;
   onClose: () => void;
 }

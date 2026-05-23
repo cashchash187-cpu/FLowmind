@@ -156,7 +156,7 @@ export function Layout({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
 
   return (
-    <ThemeProvider defaultTheme="light" storageKey="flowmind-theme">
+    <ThemeProvider defaultTheme="dark" storageKey="flowmind-theme">
       <div className="flex min-h-screen w-full bg-background text-foreground font-sans">
 
         {/* ── Desktop sidebar ─────────────────────────────────────────────── */}

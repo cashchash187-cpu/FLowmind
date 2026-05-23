@@ -40,6 +40,8 @@ import {
   Lock,
   ToggleLeft,
   ToggleRight,
+  Settings2,
+  Check,
 } from "lucide-react";
 import {
   Dialog,
@@ -262,6 +264,23 @@ export default function SessionLive() {
   const [researchPanelOpen, setResearchPanelOpen] = useState(false);
   const [researchResults, setResearchResults] = useState<ResearchResultData[]>([]);
 
+  // Mobile settings sheet — bundles STT, language, research, diarization.
+  const [settingsSheetOpen, setSettingsSheetOpen] = useState(false);
+
+  // Speaker diarization toggle — persisted per browser. When OFF, the server
+  // skips Deepgram's diarize flag AND the frontend hides Speaker labels in
+  // both the live view and the exported PDF.
+  const [diarize, setDiarize] = useState<boolean>(() => {
+    if (typeof window === "undefined") return false;
+    return localStorage.getItem("fm_diarize") === "1";
+  });
+  function toggleDiarize(next: boolean) {
+    setDiarize(next);
+    try { localStorage.setItem("fm_diarize", next ? "1" : "0"); } catch {}
+    // The new flag takes effect on the next mic restart (the user can stop
+    // + start the mic to apply it mid-session).
+  }
+
   // Auto-research is now driven entirely server-side by the insight engine
   // — no client-side toggle or loop. These stubs stay only because other
   // code still references the names (they get stripped on the next pass).
@@ -359,6 +378,7 @@ export default function SessionLive() {
     onFinalChunk: handleFinalChunk,
     sessionBaseTime: session?.createdAt ? new Date(session.createdAt).getTime() : undefined,
     forceEngine,
+    diarize,
   });
 
   // Timer — sync duration to server every 10s
@@ -495,7 +515,7 @@ export default function SessionLive() {
 
   return (
     <TooltipProvider delayDuration={300}>
-    <div className="flex flex-col h-[100dvh] bg-background" data-testid="session-live-view">
+    <div className="flex flex-col h-[calc(100dvh-3.5rem)] md:h-[100dvh] bg-background overflow-hidden" data-testid="session-live-view">
       {/* Header */}
       <header className="flex-none h-16 border-b border-border/50 bg-card/50 backdrop-blur px-4 sm:px-6 flex items-center justify-between sticky top-0 z-20">
         <div className="flex items-center gap-3 min-w-0">
@@ -529,16 +549,30 @@ export default function SessionLive() {
         </div>
 
         <div className="flex items-center gap-2 flex-none">
-          {/* STT engine — visible on mobile too, just compact (icon + tiny
-              indicator). Amber/gold tint when the Pro engine is active, so
-              the user sees the upgrade payoff. */}
+          {/* Mobile-only Settings gear — opens a sheet with STT, language,
+              research, diarization toggles. Hides the noisy mobile header. */}
+          {isSessionActive && (
+            <Button
+              variant="ghost"
+              size="sm"
+              className="md:hidden gap-1.5 h-9 px-2.5 border border-border/50"
+              onClick={() => setSettingsSheetOpen(true)}
+              data-testid="button-session-settings"
+              aria-label="Session settings"
+            >
+              <Settings2 className="h-4 w-4" />
+              <span className="text-[10px] uppercase tracking-wider font-mono font-bold">{currentLang?.code?.split("-")[0]?.toUpperCase() ?? "DE"}</span>
+            </Button>
+          )}
+
+          {/* STT engine — desktop only; mobile users reach it via Settings. */}
           {isSessionActive && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
                   variant="ghost"
                   size="sm"
-                  className={`gap-1.5 h-8 px-2 font-mono text-xs ${
+                  className={`hidden md:inline-flex gap-1.5 h-8 px-2 font-mono text-xs ${
                     speech.engine === "deepgram"
                       ? "text-amber-600 border border-amber-500/30 bg-amber-500/5 hover:bg-amber-500/10"
                       : "text-muted-foreground border border-border/50 hover:bg-muted/30"
@@ -550,11 +584,10 @@ export default function SessionLive() {
                   ) : (
                     <span className="h-1.5 w-1.5 rounded-full bg-muted-foreground/50" />
                   )}
-                  <span className="hidden sm:inline uppercase tracking-wider font-semibold">
+                  <span className="uppercase tracking-wider font-semibold">
                     {speech.engine === "deepgram" ? "Pro AI" : "Browser"}
                   </span>
-                  <span className="hidden sm:inline text-[9px] opacity-60">STT ▾</span>
-                  <span className="sm:hidden text-[10px] font-bold uppercase tracking-wider">STT</span>
+                  <span className="text-[9px] opacity-60">STT ▾</span>
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="font-mono text-xs w-52">
@@ -618,17 +651,13 @@ export default function SessionLive() {
             </DropdownMenu>
           )}
 
-          {/* Language selector — visible for both engines. "Auto-detect" maps
-              to Deepgram's multilingual model; browser STT uses the system
-              default in that case. */}
+          {/* Language selector — desktop only; mobile users reach it via Settings. */}
           {isSessionActive && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button variant="ghost" size="sm" className="gap-1.5 font-mono text-xs h-8 px-2" title="Language">
+                <Button variant="ghost" size="sm" className="hidden md:inline-flex gap-1.5 font-mono text-xs h-8 px-2" title="Language">
                   <Globe className="h-3.5 w-3.5" />
-                  <span className="hidden sm:inline">
-                    {currentLang?.label ?? language}
-                  </span>
+                  <span>{currentLang?.label ?? language}</span>
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="font-mono text-xs">
@@ -651,7 +680,7 @@ export default function SessionLive() {
             </DropdownMenu>
           )}
 
-          {/* Research button — both modes */}
+          {/* Research button — desktop only; mobile users reach it via Settings. */}
           {researchAvailable && (
             <Tooltip>
               <TooltipTrigger asChild>
@@ -659,12 +688,12 @@ export default function SessionLive() {
                   <Button
                     variant={researchPanelOpen ? "secondary" : "ghost"}
                     size="sm"
-                    className={`gap-1.5 h-8 px-2 ${researchPanelOpen ? "" : "text-amber-600 hover:text-amber-600 hover:bg-amber-500/10 border border-amber-500/30 hover:border-amber-500/50"}`}
+                    className={`hidden md:inline-flex gap-1.5 h-8 px-2 ${researchPanelOpen ? "" : "text-amber-600 hover:text-amber-600 hover:bg-amber-500/10 border border-amber-500/30 hover:border-amber-500/50"}`}
                     onClick={() => setResearchPanelOpen((v) => !v)}
                     data-testid="button-research-panel"
                   >
                     <Search className="h-3.5 w-3.5" />
-                    <span className="hidden sm:inline text-xs font-semibold">Research</span>
+                    <span className="text-xs font-semibold">Research</span>
                     {researchLimit > 0 && (
                       <span className="hidden lg:inline text-[10px] text-amber-600/70 font-mono">
                         {Math.max(0, researchLimit - researchUsed)}/{researchLimit}
@@ -676,12 +705,12 @@ export default function SessionLive() {
                     <Button
                       variant="ghost"
                       size="sm"
-                      className="gap-1.5 h-8 px-2 text-amber-600/50 border border-amber-500/20 hover:bg-amber-500/5 hover:text-amber-600/80"
+                      className="hidden md:inline-flex gap-1.5 h-8 px-2 text-amber-600/50 border border-amber-500/20 hover:bg-amber-500/5 hover:text-amber-600/80"
                       asChild={false}
                     >
                       <Lock className="h-3.5 w-3.5" />
-                      <span className="hidden sm:inline text-xs font-semibold">Research</span>
-                      <span className="hidden sm:inline text-[9px] font-mono bg-amber-500/15 text-amber-600 px-1 py-0.5 rounded">Pro</span>
+                      <span className="text-xs font-semibold">Research</span>
+                      <span className="text-[9px] font-mono bg-amber-500/15 text-amber-600 px-1 py-0.5 rounded">Pro</span>
                     </Button>
                   </Link>
                 )}
@@ -1076,6 +1105,190 @@ export default function SessionLive() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
+
+      {/* ─── Mobile session settings sheet ──────────────────────────────────
+          Bundles every per-session preference so the mobile header can stay
+          minimal. Desktop users have the same controls inline in the header. */}
+      <Sheet open={settingsSheetOpen} onOpenChange={setSettingsSheetOpen}>
+        <SheetContent
+          side="right"
+          className="w-[88vw] max-w-sm p-0 border-l border-border/40 bg-card/95 backdrop-blur-xl flex flex-col"
+        >
+          <SheetTitle className="sr-only">Session settings</SheetTitle>
+          <div className="px-5 py-4 border-b border-border/40 flex items-center gap-2">
+            <Settings2 className="h-4 w-4 text-primary" />
+            <span className="font-mono font-bold uppercase tracking-widest text-sm">Settings</span>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-5 space-y-6">
+            {/* ── Language ─────────────────────────────────────────────── */}
+            <div>
+              <div className="flex items-center gap-2 mb-2 text-xs font-mono uppercase tracking-widest text-muted-foreground">
+                <Globe className="h-3.5 w-3.5" />
+                Language
+              </div>
+              <div className="grid grid-cols-2 gap-1.5">
+                {LANGUAGE_OPTIONS.map((l) => (
+                  <button
+                    key={l.code}
+                    type="button"
+                    onClick={() => {
+                      const wasListening = speech.isListening;
+                      if (wasListening) speech.stop();
+                      setLanguage(l.code);
+                      localStorage.setItem("fm_stt_lang", l.code);
+                      if (wasListening) setTimeout(() => speech.start(), 300);
+                    }}
+                    className={`flex items-center justify-between gap-2 px-3 py-2.5 rounded-xl border text-sm font-mono ${
+                      language === l.code
+                        ? "border-primary/40 bg-primary/10 text-primary font-semibold"
+                        : "border-border/50 hover:bg-muted/40"
+                    }`}
+                  >
+                    <span>{l.label}</span>
+                    {language === l.code && <Check className="h-4 w-4" />}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* ── Transcription engine ─────────────────────────────────── */}
+            <div>
+              <div className="flex items-center gap-2 mb-2 text-xs font-mono uppercase tracking-widest text-muted-foreground">
+                <Mic className="h-3.5 w-3.5" />
+                Transcription engine
+              </div>
+              <div className="space-y-1.5">
+                <button
+                  type="button"
+                  onClick={() => {
+                    if (!isPro) return;
+                    const wasListening = speech.isListening;
+                    if (wasListening) speech.stop();
+                    setEngineOverride("auto");
+                    localStorage.setItem("fm_stt_engine", "auto");
+                    if (wasListening) setTimeout(() => speech.start(), 400);
+                  }}
+                  disabled={!isPro}
+                  className={`w-full flex items-center gap-3 px-3 py-3 rounded-xl border text-sm ${
+                    engineOverride === "auto" && isPro
+                      ? "border-amber-500/40 bg-amber-500/5 text-amber-600 font-semibold"
+                      : "border-border/50 hover:bg-muted/40 disabled:opacity-50"
+                  }`}
+                >
+                  <span className="h-2 w-2 rounded-full bg-amber-500 flex-none" />
+                  <span className="flex-1 text-left">
+                    <span className="block font-mono uppercase tracking-wider text-xs">Pro AI · Deepgram</span>
+                    <span className="block text-[11px] text-muted-foreground font-normal">nova-3 · multilingual</span>
+                  </span>
+                  {!isPro && (
+                    <Badge variant="outline" className="text-[10px] text-amber-600 border-amber-500/30 bg-amber-500/5 gap-1">
+                      <Lock className="h-2.5 w-2.5" />Pro
+                    </Badge>
+                  )}
+                  {engineOverride === "auto" && isPro && <Check className="h-4 w-4" />}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    const wasListening = speech.isListening;
+                    if (wasListening) speech.stop();
+                    setEngineOverride("browser");
+                    localStorage.setItem("fm_stt_engine", "browser");
+                    if (wasListening) setTimeout(() => speech.start(), 400);
+                  }}
+                  className={`w-full flex items-center gap-3 px-3 py-3 rounded-xl border text-sm ${
+                    engineOverride === "browser" || !isPro
+                      ? "border-primary/30 bg-primary/5 text-primary font-semibold"
+                      : "border-border/50 hover:bg-muted/40"
+                  }`}
+                >
+                  <span className="h-2 w-2 rounded-full bg-muted-foreground/60 flex-none" />
+                  <span className="flex-1 text-left">
+                    <span className="block font-mono uppercase tracking-wider text-xs">Browser STT</span>
+                    <span className="block text-[11px] text-muted-foreground font-normal">free · in-browser</span>
+                  </span>
+                  {(engineOverride === "browser" || !isPro) && <Check className="h-4 w-4" />}
+                </button>
+              </div>
+            </div>
+
+            {/* ── Speaker diarization (placeholder until Wave 4-B wires the
+                  server side; the toggle persists but won't take effect yet) */}
+            <div>
+              <div className="flex items-center gap-2 mb-2 text-xs font-mono uppercase tracking-widest text-muted-foreground">
+                <MessageSquare className="h-3.5 w-3.5" />
+                Speaker detection
+              </div>
+              <button
+                type="button"
+                onClick={() => toggleDiarize(!diarize)}
+                className={`w-full flex items-center justify-between gap-3 px-3 py-3 rounded-xl border text-sm ${
+                  diarize ? "border-primary/30 bg-primary/5 text-primary" : "border-border/50 hover:bg-muted/40"
+                }`}
+              >
+                <span className="flex-1 text-left">
+                  <span className="block font-mono uppercase tracking-wider text-xs">Distinguish speakers</span>
+                  <span className="block text-[11px] text-muted-foreground font-normal">
+                    {diarize ? "Speaker A / B / C will be shown" : "All speech grouped together"}
+                  </span>
+                </span>
+                {diarize ? <ToggleRight className="h-6 w-6 text-primary" /> : <ToggleLeft className="h-6 w-6 text-muted-foreground" />}
+              </button>
+            </div>
+
+            {/* ── Research ─────────────────────────────────────────────── */}
+            {researchAvailable && (
+              <div>
+                <div className="flex items-center gap-2 mb-2 text-xs font-mono uppercase tracking-widest text-muted-foreground">
+                  <Search className="h-3.5 w-3.5" />
+                  Live Research
+                </div>
+                {canResearch ? (
+                  <button
+                    type="button"
+                    onClick={() => { setSettingsSheetOpen(false); setResearchPanelOpen(true); }}
+                    className="w-full flex items-center gap-3 px-3 py-3 rounded-xl border border-amber-500/30 bg-amber-500/5 text-amber-600 text-sm font-mono"
+                  >
+                    <Search className="h-4 w-4" />
+                    <span className="flex-1 text-left uppercase tracking-wider text-xs font-semibold">Open research panel</span>
+                    {researchLimit > 0 && (
+                      <span className="text-[10px] text-amber-600/70">
+                        {Math.max(0, researchLimit - researchUsed)}/{researchLimit}
+                      </span>
+                    )}
+                  </button>
+                ) : (
+                  <Link href="/pricing">
+                    <button
+                      type="button"
+                      className="w-full flex items-center gap-3 px-3 py-3 rounded-xl border border-amber-500/20 bg-amber-500/5 text-amber-600/80 text-sm font-mono"
+                    >
+                      <Lock className="h-4 w-4" />
+                      <span className="flex-1 text-left uppercase tracking-wider text-xs font-semibold">Upgrade to use Research</span>
+                      <Badge variant="outline" className="text-[10px] text-amber-600 border-amber-500/30 bg-amber-500/5">Pro</Badge>
+                    </button>
+                  </Link>
+                )}
+              </div>
+            )}
+
+            {/* ── Notes link ───────────────────────────────────────────── */}
+            <div>
+              <Link href={`/session/${sessionId}/notes`}>
+                <button
+                  type="button"
+                  onClick={() => setSettingsSheetOpen(false)}
+                  className="w-full flex items-center gap-3 px-3 py-3 rounded-xl border border-border/50 hover:bg-muted/40 text-sm font-mono"
+                >
+                  <FileText className="h-4 w-4" />
+                  <span className="flex-1 text-left uppercase tracking-wider text-xs font-semibold">Meeting notes</span>
+                </button>
+              </Link>
+            </div>
+          </div>
+        </SheetContent>
+      </Sheet>
 
       {/* AI Response panel */}
       <Sheet open={aiPanelOpen} onOpenChange={setAiPanelOpen}>

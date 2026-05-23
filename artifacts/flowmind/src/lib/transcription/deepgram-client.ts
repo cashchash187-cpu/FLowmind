@@ -2,14 +2,14 @@ import { useAuthStore, getApiUrl } from "@/lib/auth";
 
 export type DgMessage =
   | { type: "ready" }
-  | { type: "partial"; text: string }
-  | { type: "final"; text: string }
+  | { type: "partial"; text: string; speaker?: string | null }
+  | { type: "final"; text: string; speaker?: string | null }
   | { type: "limit"; reason: string; message: string }
   | { type: "error"; reason: string; message: string };
 
 export type DgClientCallbacks = {
-  onPartial: (text: string) => void;
-  onFinal: (text: string) => void;
+  onPartial: (text: string, speaker?: string | null) => void;
+  onFinal: (text: string, speaker?: string | null) => void;
   onLimit: (msg: string) => void;
   onError: (msg: string) => void;
   onReady: () => void;
@@ -29,7 +29,8 @@ export class DeepgramStreamClient {
   constructor(
     private sessionId: number,
     private language: string,
-    private callbacks: DgClientCallbacks
+    private callbacks: DgClientCallbacks,
+    private diarize: boolean = false,
   ) {}
 
   async start(): Promise<void> {
@@ -95,6 +96,7 @@ export class DeepgramStreamClient {
         type: "init",
         sessionId: this.sessionId,
         language: this.language,
+        diarize: this.diarize,
       }));
     };
 
@@ -108,10 +110,10 @@ export class DeepgramStreamClient {
           this.callbacks.onReady();
           break;
         case "partial":
-          this.callbacks.onPartial(msg.text);
+          this.callbacks.onPartial(msg.text, msg.speaker ?? null);
           break;
         case "final":
-          this.callbacks.onFinal(msg.text);
+          this.callbacks.onFinal(msg.text, msg.speaker ?? null);
           break;
         case "limit":
           this.callbacks.onLimit(msg.message);

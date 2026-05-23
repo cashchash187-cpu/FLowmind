@@ -43,7 +43,11 @@ function getSpeechRecognitionCtor(): SpeechRecognitionCtor | null {
 
 // ── Exports ───────────────────────────────────────────────────────────────────
 
-export type SpeakerLabel = "Speaker A" | "Speaker B" | "Speaker C";
+// Used to be a fixed enum ("Speaker A" | "Speaker B" | "Speaker C") but we
+// also need to express "no speaker info" (e.g. when diarization is off,
+// label is just "Speaker") and Deepgram-supplied labels can go beyond C.
+// String is the simplest correct type.
+export type SpeakerLabel = string;
 
 export interface LiveTranscriptChunk {
   id: string;

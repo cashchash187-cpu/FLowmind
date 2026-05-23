@@ -38,6 +38,9 @@ export const deepgramProvider: SttProvider = {
       endpointing: "900",
       utterance_end_ms: "1500",
     });
+    if (opts.diarize) {
+      params.set("diarize", "true");
+    }
 
     const url = `${DEEPGRAM_WS_URL}?${params}`;
     const ws = new WebSocket(url, {
@@ -73,15 +76,18 @@ export const deepgramProvider: SttProvider = {
     // hold them until either `speech_final=true` or an `UtteranceEnd` event
     // signals the natural end of the utterance.
     let utteranceParts: string[] = [];
+    let utteranceSpeaker: string | null = null;
     let lastEmitted = "";
 
     function flushUtterance() {
       if (utteranceParts.length === 0) return;
       const merged = utteranceParts.join(" ").replace(/\s+/g, " ").trim();
+      const speaker = utteranceSpeaker;
       utteranceParts = [];
+      utteranceSpeaker = null;
       if (!merged || merged === lastEmitted) return;
       lastEmitted = merged;
-      opts.onFinal(merged);
+      opts.onFinal(merged, speaker);
     }
 
     ws.on("message", (raw: Buffer) => {
@@ -97,7 +103,35 @@ export const deepgramProvider: SttProvider = {
       if (type === "Results") {
         const channel = data["channel"] as Record<string, unknown> | undefined;
         const alts = channel?.["alternatives"] as Array<Record<string, unknown>> | undefined;
-        const text = (alts?.[0]?.["transcript"] as string | undefined)?.trim();
+        const alt0 = alts?.[0];
+        const text = (alt0?.["transcript"] as string | undefined)?.trim();
+        // Diarized output puts a `words` array under the alt, each word
+        // carrying a `speaker` (integer). We take the most common speaker
+        // in the fragment as the utterance label.
+        let fragSpeaker: string | null = null;
+        if (opts.diarize) {
+          const words = alt0?.["words"] as Array<Record<string, unknown>> | undefined;
+          if (words && words.length) {
+            const counts: Record<string, number> = {};
+            for (const w of words) {
+              const s = w["speaker"];
+              if (s === undefined || s === null) continue;
+              const key = String(s);
+              counts[key] = (counts[key] ?? 0) + 1;
+            }
+            let topKey: string | null = null;
+            let topCount = 0;
+            for (const [k, c] of Object.entries(counts)) {
+              if (c > topCount) { topCount = c; topKey = k; }
+            }
+            if (topKey !== null) {
+              // Map 0 -> A, 1 -> B, … for human-friendly labels.
+              const n = Number(topKey);
+              if (!Number.isNaN(n)) fragSpeaker = String.fromCharCode("A".charCodeAt(0) + n);
+              else fragSpeaker = topKey;
+            }
+          }
+        }
         const isFinal = data["is_final"] === true;
         const speechFinal = data["speech_final"] === true;
 
@@ -109,13 +143,16 @@ export const deepgramProvider: SttProvider = {
 
         if (isFinal) {
           utteranceParts.push(text);
+          // Record speaker on the first finalized fragment of the utterance;
+          // later fragments rarely flip speakers within one utterance.
+          if (utteranceSpeaker === null) utteranceSpeaker = fragSpeaker;
           // Show what's confirmed so far as the live caption.
-          opts.onPartial(utteranceParts.join(" "));
+          opts.onPartial(utteranceParts.join(" "), utteranceSpeaker);
           if (speechFinal) flushUtterance();
         } else {
           // Interim — append to confirmed parts so the user sees a stable prefix.
           const live = [...utteranceParts, text].join(" ");
-          opts.onPartial(live);
+          opts.onPartial(live, utteranceSpeaker ?? fragSpeaker);
         }
         return;
       }

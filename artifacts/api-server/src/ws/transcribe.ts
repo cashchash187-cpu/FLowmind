@@ -15,6 +15,7 @@ interface WsMsg {
   type: "init" | "audio";
   sessionId?: number;
   language?: string;
+  diarize?: boolean;
 }
 
 export function attachWsTranscribe(server: Server) {
@@ -155,20 +156,30 @@ export function attachWsTranscribe(server: Server) {
             }
           }, USAGE_SYNC_INTERVAL_MS);
 
+          const diarize = msg.diarize === true;
           try {
             sttSession = await activeProvider.open({
               language,
-              onPartial: (text) => {
-                if (!closed) ws.send(JSON.stringify({ type: "partial", text }));
+              diarize,
+              onPartial: (text, speaker) => {
+                if (!closed) ws.send(JSON.stringify({ type: "partial", text, speaker: diarize ? speaker ?? null : null }));
               },
-              onFinal: async (text) => {
+              onFinal: async (text, speaker) => {
                 if (closed || !sessionId) return;
-                ws.send(JSON.stringify({ type: "final", text }));
-                // Persist transcript
+                const dbLabel = diarize && speaker
+                  ? (speaker.startsWith("Speaker") ? speaker : `Speaker ${speaker}`)
+                  : "Speaker";
+                ws.send(JSON.stringify({
+                  type: "final",
+                  text,
+                  speaker: diarize ? speaker ?? null : null,
+                }));
+                // Persist transcript with the resolved label (generic "Speaker"
+                // when diarization is off so the export can drop it cleanly).
                 try {
                   await db.insert(transcriptsTable).values({
                     sessionId,
-                    speakerLabel: "Speaker A",
+                    speakerLabel: dbLabel,
                     text,
                     startMs: Date.now() - sessionBaseTime,
                   });
@@ -183,7 +194,7 @@ export function attachWsTranscribe(server: Server) {
               onClose: () => closeAll(),
             });
             ws.send(JSON.stringify({ type: "ready" }));
-            logger.info({ userId: user.id, sessionId, language }, "[WS] STT ready");
+            logger.info({ userId: user.id, sessionId, language, diarize }, "[WS] STT ready");
           } catch (err) {
             logger.error({ err }, "[WS] Failed to open STT session");
             ws.send(JSON.stringify({ type: "error", reason: "stt", message: "Failed to connect to transcription service." }));
