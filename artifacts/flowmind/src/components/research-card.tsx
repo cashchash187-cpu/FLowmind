@@ -129,8 +129,7 @@ export function ResearchCard({ result, isLoading, error, onRetry }: ResearchCard
       {/* Footer */}
       <div className="px-4 py-2 border-t border-border/30 bg-muted/20">
         <span className="text-[10px] text-muted-foreground/50 font-mono">
-          via web · {result.trigger === "auto" ? "auto" : "manual"} ·{" "}
-          {formatDistanceToNow(new Date(result.createdAt), { addSuffix: true })}
+          via web · {formatDistanceToNow(new Date(result.createdAt), { addSuffix: true })}
         </span>
       </div>
     </div>

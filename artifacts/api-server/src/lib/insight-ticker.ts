@@ -6,13 +6,13 @@ import { isResearchAvailable, research } from "./research-provider";
 import { getPlanLimits } from "./plans";
 import { logger } from "./logger";
 
-// Cadence is constrained by Gemini's free-tier 10 RPM cap. A single insight
-// can fire up to TWO LLM calls (decide + synthesize), so the effective rate
-// must stay under 5 insights/min. Combined with the min-seconds gate below
-// that gives us a safe ~3-4 insights/min in the worst case.
-const TICK_INTERVAL_MS = 12_000;        // check every 12s
-const MIN_CHARS_SINCE_LAST = 50;        // >=50 new chars of speech required
-const MIN_SECONDS_SINCE_LAST = 18;      // >=18s between insights
+// With LLM_MODEL=gemini-2.5-flash-lite the free-tier cap is 15 RPM. Each
+// insight uses at most 2 LLM calls (decide + synth), so 6 insights/min is
+// the ceiling. We aim for ~4/min by gating below; that leaves headroom for
+// the synth retries.
+const TICK_INTERVAL_MS = 6_000;         // check every 6s — feels responsive
+const MIN_CHARS_SINCE_LAST = 40;        // >=40 new chars of speech required
+const MIN_SECONDS_SINCE_LAST = 12;      // >=12s between insights
 const HEARTBEAT_STALE_MS = 120_000;     // session considered idle if hb > 2min ago
 const RECENT_TRANSCRIPT_CHARS = 2400;   // chars of recent speech to send to the LLM
 
@@ -124,8 +124,17 @@ export function startInsightTicker(userId: number, sessionId: number) {
         recentText = recentText.slice(-RECENT_TRANSCRIPT_CHARS);
       }
 
+      // 5b. Pull the last few insights so decideInsight can avoid repeating itself.
+      const recentInsights = await db
+        .select({ suggestion: aiAssistsTable.suggestion })
+        .from(aiAssistsTable)
+        .where(and(eq(aiAssistsTable.sessionId, session.id), eq(aiAssistsTable.mode, "insight")))
+        .orderBy(desc(aiAssistsTable.createdAt))
+        .limit(6);
+      const previousInsightTips = recentInsights.map((r) => r.suggestion).filter(Boolean);
+
       // 6. Pass 1 — decide whether to speak and whether facts are needed.
-      const decision = await decideInsight(recentText);
+      const decision = await decideInsight(recentText, previousInsightTips);
 
       // Advance the char baseline even on silence so we wait for genuinely new
       // speech before re-querying the same context.

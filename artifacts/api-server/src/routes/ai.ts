@@ -307,8 +307,17 @@ router.post("/ai/insights/generate", async (req, res): Promise<void> => {
 
   const recentText = recentRows.map((r) => r.text).reverse().join(" ").slice(-2400);
 
+  // Recent insights for repeat-suppression.
+  const recentInsights = await db
+    .select({ suggestion: aiAssistsTable.suggestion })
+    .from(aiAssistsTable)
+    .where(and(eq(aiAssistsTable.sessionId, Number(sessionId)), eq(aiAssistsTable.mode, "insight")))
+    .orderBy(desc(aiAssistsTable.createdAt))
+    .limit(6);
+  const previousInsightTips = recentInsights.map((r) => r.suggestion).filter(Boolean);
+
   // Two-pass agentic flow: decide -> (optional research) -> synthesize.
-  const decision = await decideInsight(recentText);
+  const decision = await decideInsight(recentText, previousInsightTips);
   if (!decision || !decision.shouldFire) { res.status(204).end(); return; }
 
   let finalTip = decision.tip ?? "";

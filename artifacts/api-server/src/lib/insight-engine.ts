@@ -54,42 +54,63 @@ const VALID_CATEGORIES: InsightCategory[] = ["opportunity", "risk", "connection"
 
 // ─── Pass 1: decide ─────────────────────────────────────────────────────────
 
-const DECIDE_PROMPT = `You are an experienced strategic advisor sitting next to a listener in a LIVE business conversation. Your job is to whisper insights ONLY when they add real value — like a sharp colleague who only speaks up when it matters. You have a research tool available; when concrete facts (numbers, names, companies, regulations) would help, you flag them for lookup instead of bluffing.
+const DECIDE_PROMPT = `You are an experienced strategic advisor sitting next to a listener in a LIVE business conversation. Your job is to whisper insights when they add real value — like a sharp colleague who only speaks up when it matters. You have a research tool available; when concrete facts (numbers, names, companies, regulations) would help, you flag them for lookup instead of bluffing.
 
-Decide whether to speak up RIGHT NOW based on the most recent transcript.
+You will receive TWO things:
+1. The most recent transcript.
+2. The list of insights you've ALREADY given in this same conversation (each is a one-line summary).
 
-WHEN TO SPEAK UP:
-- A specific opportunity is being missed (e.g. they mentioned a budget — suggest a related angle).
-- A risk or weakness is visible (an unsupported claim, contradiction, vague commitment).
-- A useful callback to something said earlier in this same conversation.
-- A sharp, specific question worth asking right now.
-- A factual gap where data would clearly help. In that case set needsResearch=true and DON'T write the tip yourself — research will be fetched and the tip composed in a second step.
+Decide whether to speak up RIGHT NOW.
 
-WHEN TO STAY SILENT (return shouldFire=false):
+WHEN TO SPEAK UP — there are TWO distinct cases:
+A) FACT QUESTION — the speakers want concrete data (numbers, market sizes, company details, regulations, dates, definitions). Set needsResearch=true with a targeted researchQuery. Leave "tip" as null — the synthesizer will write it AFTER the lookup.
+B) STRATEGY / OPINION / ANALYSIS — the speakers ask "what should they do", "how would you approach this", "what's the risk", "what would you suggest", or anything that wants YOUR take. Set needsResearch=false and write the tip directly — a sharp, specific, opinionated recommendation. Don't punt to research for opinions.
+
+Also speak up when:
+- A specific opportunity is being missed.
+- A risk or hidden assumption is visible.
+- A useful callback to something said earlier this conversation.
+- A sharp question the listener should ask right now.
+
+WHEN TO STAY SILENT (shouldFire=false):
 - Just pleasantries or basic context.
-- Nothing concrete or actionable has been said.
-- Your tip would be generic ("consider their needs", "build rapport").
-- You're not sure it adds value.
+- The same point you've ALREADY made in a previous insight in this conversation (check the "Already said" list — never repeat the same fact or recommendation).
+- Generic noise ("consider their needs", "build rapport").
 
-Output ONLY this JSON object (no markdown, no code fences):
+Output ONLY this JSON (no markdown, no code fences):
 {
   "shouldFire": boolean,
   "needsResearch": boolean,
   "researchQuery": string | null,   // concise web query (max 12 words) when needsResearch
-  "tip": string | null,             // ONLY when needsResearch=false; otherwise null
+  "tip": string | null,             // REQUIRED when needsResearch=false AND shouldFire=true
   "category": "opportunity" | "risk" | "connection" | "question"
 }
 
 Rules:
-- Tip (when given directly) must be at most 30 words, specific, concrete, actionable, ENDING with a complete sentence.
-- Match the transcript's language exactly (German transcript → German tip).
-- Never invent facts. If you'd be guessing on data, set needsResearch=true with a targeted query.
-- Be eager about research: any specific company name, market figure, regulation, person, product, or technical term that the listener probably can't recall should trigger needsResearch=true. Looking it up is cheap.`;
+- Tip (when given directly) is 1-3 complete sentences, max ~60 words, specific and concrete.
+- Match the transcript's language exactly (German → German, English → English).
+- Never invent factual data. If you'd be guessing on a number, set needsResearch=true.
+- NEVER repeat a point that's in the "Already said" list. If the new question is on a topic you've covered, either advance the angle (give a NEW insight on the same topic) or stay silent.`;
 
-export async function decideInsight(recentText: string): Promise<InsightDecision | null> {
+export async function decideInsight(
+  recentText: string,
+  previousInsights: string[] = [],
+): Promise<InsightDecision | null> {
   if (!llmConfigured) return null;
   const text = recentText.trim();
   if (text.length < 40) return null;
+
+  // Last few insights as one bullet per line — keeps the context small but
+  // gives the LLM enough to recognise its own past output and not repeat it.
+  const alreadySaid = previousInsights
+    .slice(0, 6)
+    .map((t, i) => `${i + 1}. ${t.replace(/\s+/g, " ").slice(0, 240)}`)
+    .join("\n");
+
+  const userMsg =
+    `Recent transcript:\n\n${text}\n\n` +
+    `Already said (most recent first — never repeat these):\n${alreadySaid || "(nothing yet)"}\n\n` +
+    `Decide now.`;
 
   let raw: string;
   try {
@@ -101,7 +122,7 @@ export async function decideInsight(recentText: string): Promise<InsightDecision
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: DECIDE_PROMPT },
-          { role: "user", content: `Recent transcript:\n\n${text}\n\nDecide now.` },
+          { role: "user", content: userMsg },
         ],
       }),
     );
@@ -260,8 +281,11 @@ export interface GeneratedInsight {
   researchQuery: string | null;
 }
 
-export async function generateInsight(recentText: string): Promise<GeneratedInsight | null> {
-  const d = await decideInsight(recentText);
+export async function generateInsight(
+  recentText: string,
+  previousInsights: string[] = [],
+): Promise<GeneratedInsight | null> {
+  const d = await decideInsight(recentText, previousInsights);
   if (!d || !d.shouldFire) return null;
   // For the legacy callers we don't run pass 2; just return the direct tip
   // when there is one, or a stub note that research is needed.
