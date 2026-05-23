@@ -1,14 +1,18 @@
 import { db } from "@workspace/db";
 import { sessionsTable, transcriptsTable, aiAssistsTable, usersTable, researchResultsTable } from "@workspace/db";
 import { eq, and, sql, desc } from "drizzle-orm";
-import { decideInsight, synthesizeInsight } from "./insight-engine";
+import { decideInsight, synthesizeInsight, fallbackTipFromResearch } from "./insight-engine";
 import { isResearchAvailable, research } from "./research-provider";
 import { getPlanLimits } from "./plans";
 import { logger } from "./logger";
 
-const TICK_INTERVAL_MS = 5_000;         // check every 5s — feels live
-const MIN_CHARS_SINCE_LAST = 40;        // >=40 new chars of speech required (was 60 — still too gated)
-const MIN_SECONDS_SINCE_LAST = 10;      // >=10s between insights
+// Cadence is constrained by Gemini's free-tier 10 RPM cap. A single insight
+// can fire up to TWO LLM calls (decide + synthesize), so the effective rate
+// must stay under 5 insights/min. Combined with the min-seconds gate below
+// that gives us a safe ~3-4 insights/min in the worst case.
+const TICK_INTERVAL_MS = 12_000;        // check every 12s
+const MIN_CHARS_SINCE_LAST = 50;        // >=50 new chars of speech required
+const MIN_SECONDS_SINCE_LAST = 18;      // >=18s between insights
 const HEARTBEAT_STALE_MS = 120_000;     // session considered idle if hb > 2min ago
 const RECENT_TRANSCRIPT_CHARS = 2400;   // chars of recent speech to send to the LLM
 
@@ -170,9 +174,18 @@ export function startInsightTicker(userId: number, sessionId: number) {
               if (synth) {
                 finalTip = synth.tip;
                 finalCategory = synth.category;
-              } else if (!finalTip) {
-                logger.warn({ userId }, "[INSIGHT-TICKER] synthesize returned nothing");
-                return;
+              } else {
+                // Synth failed (often Gemini rate-limit). Fall back to a
+                // direct quote of the Tavily answer instead of going silent.
+                const fallback = fallbackTipFromResearch(result.answer, result.sources, "de");
+                if (fallback) {
+                  finalTip = fallback.tip;
+                  finalCategory = fallback.category;
+                  logger.info({ userId }, "[INSIGHT-TICKER] used Tavily fallback for tip");
+                } else if (!finalTip) {
+                  logger.warn({ userId }, "[INSIGHT-TICKER] synthesize + fallback both empty");
+                  return;
+                }
               }
             } catch (err) {
               logger.error({ err, userId }, "[INSIGHT-TICKER] research failed");

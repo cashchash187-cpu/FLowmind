@@ -144,9 +144,28 @@ Output ONLY this JSON, no markdown:
   "category": "opportunity" | "risk" | "connection" | "question"
 }`;
 
-function domainOf(url: string): string {
+export function domainOf(url: string): string {
   try { return new URL(url).hostname.replace(/^www\./, ""); }
   catch { return ""; }
+}
+
+/**
+ * Cheap, LLM-free fallback used when synthesizeInsight() fails (e.g. when
+ * Gemini's free tier hits its 10 RPM cap). Returns a one-liner that quotes
+ * the Tavily answer directly + the first source domain. Better than 204.
+ */
+export function fallbackTipFromResearch(
+  researchAnswer: string,
+  researchSources: ResearchSourceLite[],
+  language: "de" | "en" = "de",
+): InsightSynthesis | null {
+  const answer = researchAnswer?.trim();
+  if (!answer) return null;
+  const firstDomain = researchSources[0]?.url ? domainOf(researchSources[0].url) : "";
+  // Trim to ~280 chars so it stays "whisper-sized".
+  const compact = answer.length > 280 ? answer.slice(0, 277).trimEnd() + "…" : answer;
+  const source = firstDomain ? (language === "de" ? ` (Quelle: ${firstDomain})` : ` (Source: ${firstDomain})`) : "";
+  return { tip: `${compact}${source}`, category: "question" };
 }
 
 export async function synthesizeInsight(

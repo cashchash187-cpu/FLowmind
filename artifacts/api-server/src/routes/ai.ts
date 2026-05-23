@@ -16,7 +16,7 @@ import {
 } from "@workspace/api-zod";
 import { openai, LLM_MODEL, llmConfigured } from "@workspace/integrations-openai-ai-server";
 import { getOrCreateUsage } from "../lib/usage-helpers";
-import { decideInsight, synthesizeInsight } from "../lib/insight-engine";
+import { decideInsight, synthesizeInsight, fallbackTipFromResearch } from "../lib/insight-engine";
 import { isResearchAvailable, research } from "../lib/research-provider";
 import { getPlanLimits } from "../lib/plans";
 
@@ -333,6 +333,14 @@ router.post("/ai/insights/generate", async (req, res): Promise<void> => {
         if (synth) {
           finalTip = synth.tip;
           finalCategory = synth.category;
+        } else {
+          // Synth failed (often Gemini rate-limit). Use the Tavily answer
+          // directly so the user still sees the looked-up facts.
+          const fallback = fallbackTipFromResearch(result.answer, result.sources, "de");
+          if (fallback) {
+            finalTip = fallback.tip;
+            finalCategory = fallback.category;
+          }
         }
       } catch (err) {
         req.log.error({ err }, "Insight auto-research failed");
