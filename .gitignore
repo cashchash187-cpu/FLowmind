@@ -6,6 +6,7 @@ dist/
 build/
 .turbo/
 *.log
+*.tsbuildinfo
 zipFile.zip
 source-code.zip
 

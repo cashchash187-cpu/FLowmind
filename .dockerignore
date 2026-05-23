@@ -19,6 +19,8 @@ build
 **/build
 .turbo
 *.log
+*.tsbuildinfo
+**/*.tsbuildinfo
 zipFile.zip
 source-code.zip
 attached_assets
