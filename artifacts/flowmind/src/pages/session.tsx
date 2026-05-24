@@ -550,7 +550,7 @@ export default function SessionLive() {
 
         <div className="flex items-center gap-2 flex-none">
           {/* Mobile-only Settings gear — opens a sheet with STT, language,
-              research, diarization toggles. Hides the noisy mobile header. */}
+              research, diarization toggles. */}
           {isSessionActive && (
             <Button
               variant="ghost"
@@ -561,7 +561,7 @@ export default function SessionLive() {
               aria-label="Session settings"
             >
               <Settings2 className="h-4 w-4" />
-              <span className="text-[10px] uppercase tracking-wider font-mono font-bold">{currentLang?.code?.split("-")[0]?.toUpperCase() ?? "DE"}</span>
+              <span className="text-[10px] uppercase tracking-wider font-mono font-bold hidden sm:inline">Settings</span>
             </Button>
           )}
 
@@ -742,9 +742,9 @@ export default function SessionLive() {
           )}
 
           <Link href={`/session/${sessionId}/notes`}>
-            <Button variant="ghost" size="sm" className="hidden md:inline-flex gap-2 h-8" data-testid="link-session-notes">
+            <Button variant="ghost" size="sm" className="gap-1.5 h-9 px-2.5 border border-border/50" data-testid="link-session-notes">
               <FileText className="h-4 w-4" />
-              <span className="text-xs">Notes</span>
+              <span className="text-xs font-mono uppercase tracking-wider font-bold hidden sm:inline">Notes</span>
             </Button>
           </Link>
 
@@ -819,9 +819,12 @@ export default function SessionLive() {
                       {isSessionActive ? "Press Start Mic to begin recording" : "No transcript recorded"}
                     </p>
                     {isSessionActive && (
-                      <p className="font-mono text-[10px] text-muted-foreground/30">
-                        {currentLang?.label ?? language}
-                      </p>
+                      <div className="flex items-center gap-2 mt-1 px-3 py-1.5 rounded-full border border-primary/30 bg-primary/5">
+                        <Globe className="h-3.5 w-3.5 text-primary" />
+                        <span className="font-mono text-xs uppercase tracking-wider font-bold text-primary">
+                          {currentLang?.label ?? language}
+                        </span>
+                      </div>
                     )}
                   </div>
                 ) : (
@@ -938,16 +941,31 @@ export default function SessionLive() {
           )}
 
           {/* Ended state — only show on truly ended sessions (idle sessions
-              now keep the bottom bar so users can resume). */}
+              now keep the bottom bar so users can resume). Desktop floats
+              it; mobile renders it as a normal flex item so the insight
+              dock can't sit on top of it. */}
           {session.status === "ended" && (dbTranscripts?.length ?? 0) > 0 && (
-            <div className="absolute bottom-6 left-0 right-0 flex justify-center px-4">
-              <Link href={`/session/${sessionId}/notes`}>
-                <Button className="gap-2 font-mono text-xs uppercase tracking-wider rounded-full shadow-xl">
-                  <FileText className="h-4 w-4" />
-                  View Meeting Notes
-                </Button>
-              </Link>
-            </div>
+            <>
+              {/* Desktop floating CTA */}
+              <div className="hidden md:flex absolute bottom-6 left-0 right-0 justify-center px-4">
+                <Link href={`/session/${sessionId}/notes`}>
+                  <Button className="gap-2 font-mono text-xs uppercase tracking-wider rounded-full shadow-xl">
+                    <FileText className="h-4 w-4" />
+                    View Meeting Notes
+                  </Button>
+                </Link>
+              </div>
+              {/* Mobile in-flow CTA — lives at the bottom of the transcript
+                  column, ABOVE the insight dock if present. */}
+              <div className="md:hidden flex-none px-4 py-3 border-t border-border/40 bg-card/40">
+                <Link href={`/session/${sessionId}/notes`}>
+                  <Button className="w-full gap-2 font-mono text-sm uppercase tracking-wider rounded-xl h-12">
+                    <FileText className="h-4 w-4" />
+                    View Meeting Notes
+                  </Button>
+                </Link>
+              </div>
+            </>
           )}
         </div>
 
@@ -1273,19 +1291,6 @@ export default function SessionLive() {
               </div>
             )}
 
-            {/* ── Notes link ───────────────────────────────────────────── */}
-            <div>
-              <Link href={`/session/${sessionId}/notes`}>
-                <button
-                  type="button"
-                  onClick={() => setSettingsSheetOpen(false)}
-                  className="w-full flex items-center gap-3 px-3 py-3 rounded-xl border border-border/50 hover:bg-muted/40 text-sm font-mono"
-                >
-                  <FileText className="h-4 w-4" />
-                  <span className="flex-1 text-left uppercase tracking-wider text-xs font-semibold">Meeting notes</span>
-                </button>
-              </Link>
-            </div>
           </div>
         </SheetContent>
       </Sheet>

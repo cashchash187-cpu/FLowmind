@@ -20,6 +20,25 @@ import { decideInsight, synthesizeInsight, fallbackTipFromResearch } from "../li
 import { isResearchAvailable, research } from "../lib/research-provider";
 import { getPlanLimits } from "../lib/plans";
 
+/** Retry transient LLM errors (429 rate-limit, 5xx). Same shape as the
+    helper inside insight-engine.ts; kept local because ai.ts shouldn't
+    reach across files for a 25-line utility. */
+async function withLlmRetry<T>(label: string, fn: () => Promise<T>, attempts = 3): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (err: unknown) {
+      lastErr = err;
+      const status = (err as { status?: number })?.status;
+      const transient = status === 429 || (status !== undefined && status >= 500 && status < 600);
+      if (!transient || i === attempts - 1) throw err;
+      await new Promise((r) => setTimeout(r, 600 * Math.pow(2, i)));
+    }
+  }
+  throw lastErr;
+}
+
 const router: IRouter = Router();
 
 // Feed enough recent context that the model can answer questions referring to
@@ -146,29 +165,33 @@ router.post("/sessions/:id/ai-assist", async (req, res): Promise<void> => {
 
   let suggestion: string;
   try {
-    const completion = await openai.chat.completions.create({
-      model: LLM_MODEL,
-      // Gemini 2.5 Flash silently consumes part of the token budget on
-      // reasoning; 200 tokens left almost nothing for the actual answer,
-      // which is why responses came back cut off mid-sentence. 1024 is
-      // generous enough to always render a complete reply.
-      max_tokens: 1024,
-      temperature: 0.5,
-      messages: [
-        { role: "system", content: systemPrompt },
-        { role: "user", content: `Here is the conversation so far:\n\n${context}\n\nGenerate your response now.` },
-      ],
-    });
+    const completion = await withLlmRetry("ai-assist", () =>
+      openai.chat.completions.create({
+        model: LLM_MODEL,
+        max_tokens: 1024,
+        temperature: 0.5,
+        messages: [
+          { role: "system", content: systemPrompt },
+          { role: "user", content: `Here is the conversation so far:\n\n${context}\n\nGenerate your response now.` },
+        ],
+      }),
+    );
     suggestion = completion.choices[0]?.message?.content?.trim() || "";
     if (!suggestion) throw new Error("Empty completion from LLM");
   } catch (err: any) {
-    // Surface the REAL error instead of swallowing it as a fake 200.
     const status = err?.status ?? err?.response?.status;
     const detail = err?.error?.message ?? err?.message ?? "Unknown LLM error";
     req.log.error({ err, status, model: LLM_MODEL }, "AI assist LLM request failed");
-    res.status(502).json({
-      error: "ai_provider_error",
-      message: `LLM request failed (model ${LLM_MODEL}${status ? `, status ${status}` : ""}): ${detail}`,
+
+    // Friendlier message for the most common case (rate-limit) so the user
+    // sees "try again in a moment" instead of a raw 429 stack trace.
+    const friendlyMessage =
+      status === 429
+        ? "AI is rate-limited right now. Wait a few seconds and try again."
+        : `LLM request failed (model ${LLM_MODEL}${status ? `, status ${status}` : ""}): ${detail}`;
+    res.status(status === 429 ? 429 : 502).json({
+      error: status === 429 ? "ai_rate_limited" : "ai_provider_error",
+      message: friendlyMessage,
     });
     return;
   }
@@ -220,7 +243,7 @@ router.post("/sessions/:id/ai-summary", async (req, res): Promise<void> => {
   let notes: { summary: string; actionItems: string[]; decisions: string[]; openQuestions: string[]; keyInsights: string[] };
 
   try {
-    const completion = await openai.chat.completions.create({
+    const completion = await withLlmRetry("ai-summary", () => openai.chat.completions.create({
       model: LLM_MODEL,
       max_tokens: 2048,
       response_format: { type: "json_object" },
@@ -238,7 +261,7 @@ Respond in the same language as the transcript. Be specific to the content. No g
         },
         { role: "user", content: `Meeting transcript:\n\n${fullTranscript}` },
       ],
-    });
+    }));
     const raw = completion.choices[0]?.message?.content?.trim() || "{}";
     const cleaned = raw.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim();
     const parsed = JSON.parse(cleaned);

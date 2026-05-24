@@ -14,6 +14,12 @@ export default function ChangePasswordPage() {
   const { user, updateUser } = useAuthStore();
   const { toast } = useToast();
 
+  // First-login flow skips the "current password" check; every other case
+  // (Settings → Change password) requires it.
+  const isFirstLogin = !!user?.passwordMustChange;
+
+  const [currentPassword, setCurrentPassword] = useState("");
+  const [showCurrent, setShowCurrent] = useState(false);
   const [newPassword, setNewPassword] = useState("");
   const [confirmPassword, setConfirmPassword] = useState("");
   const [showNew, setShowNew] = useState(false);
@@ -25,6 +31,10 @@ export default function ChangePasswordPage() {
     e.preventDefault();
     setError("");
 
+    if (!isFirstLogin && !currentPassword) {
+      setError("Please enter your current password.");
+      return;
+    }
     if (newPassword.length < 12) {
       setError("Password must be at least 12 characters.");
       return;
@@ -36,15 +46,17 @@ export default function ChangePasswordPage() {
 
     setLoading(true);
     try {
+      const body: Record<string, string> = { newPassword };
+      if (!isFirstLogin) body.currentPassword = currentPassword;
       const res = await apiFetch("/api/account/password", {
         method: "PATCH",
-        body: JSON.stringify({ newPassword }),
+        body: JSON.stringify(body),
       });
       const data = await res.json();
       if (res.ok) {
         updateUser({ passwordMustChange: false });
-        toast({ title: "Password set!", description: "You're all set." });
-        setLocation("/");
+        toast({ title: "Password updated", description: "Your new password is active." });
+        setLocation(isFirstLogin ? "/" : "/settings");
       } else {
         setError(data.message ?? data.error ?? "Failed to update password.");
       }
@@ -70,19 +82,46 @@ export default function ChangePasswordPage() {
           <div className="bg-amber-500/15 p-3 rounded-2xl text-amber-600 mb-4">
             <KeyRound className="h-7 w-7" />
           </div>
-          <h1 className="text-2xl font-bold tracking-tight">Set your password</h1>
+          <h1 className="text-2xl font-bold tracking-tight">
+            {isFirstLogin ? "Set your password" : "Change password"}
+          </h1>
           <p className="text-muted-foreground mt-1 text-sm text-center max-w-xs">
-            This is your first login. Please set a permanent password before continuing.
+            {isFirstLogin
+              ? "This is your first login. Please set a permanent password before continuing."
+              : "Enter your current password, then choose a new one."}
           </p>
         </div>
 
         <Card className="border-border/50 shadow-xl">
           <CardHeader className="pb-2">
-            <CardTitle className="text-lg">Create a new password</CardTitle>
+            <CardTitle className="text-lg">
+              {isFirstLogin ? "Create a new password" : "Update your password"}
+            </CardTitle>
             <CardDescription>Minimum 12 characters. Make it strong.</CardDescription>
           </CardHeader>
           <CardContent>
             <form onSubmit={handleSubmit} className="space-y-4">
+              {!isFirstLogin && (
+                <div className="space-y-1.5">
+                  <Label htmlFor="current-password">Current password</Label>
+                  <div className="relative">
+                    <Input
+                      id="current-password"
+                      type={showCurrent ? "text" : "password"}
+                      placeholder="your existing password"
+                      value={currentPassword}
+                      onChange={(e) => setCurrentPassword(e.target.value)}
+                      required
+                      className="pr-10"
+                      autoComplete="current-password"
+                    />
+                    <button type="button" className="absolute right-3 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground" onClick={() => setShowCurrent((s) => !s)}>
+                      {showCurrent ? <EyeOff className="h-4 w-4" /> : <Eye className="h-4 w-4" />}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="space-y-1.5">
                 <Label htmlFor="new-password">New password</Label>
                 <div className="relative">
