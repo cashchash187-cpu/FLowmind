@@ -114,16 +114,22 @@ export function startInsightTicker(userId: number, sessionId: number) {
       const fullText = allRows.map((r) => r.text).join(" ");
       const currentCharCount = fullText.length;
 
-      // Newly-spoken text since the last insight — used both for the
-      // char-gate and for question detection.
+      // Question detection has TWO bands:
+      //  - "fresh" — question in speech since the last insight (true
+      //    reactive: the question just appeared, demand a fast answer).
+      //  - "lingering" — question still visible in the last ~1500 chars of
+      //    transcript (likely a compound question whose 2nd part wasn't
+      //    answered yet). Lingering questions get the short reactive gate
+      //    too so follow-ups arrive within seconds.
       const newSpeech = fullText.slice(tickEntry.charCountAtLastInsight);
-      const reactive = looksLikeQuestion(newSpeech);
+      const recentTail = fullText.slice(-1500);
+      const reactive = looksLikeQuestion(newSpeech) || looksLikeQuestion(recentTail);
 
-      // 4. Gates. Reactive insights (direct question) get a shorter cooldown
-      //    and a smaller char threshold so they fire fast.
+      // 4. Gates. Reactive insights (direct question still in the air) get
+      //    a shorter cooldown and a smaller char threshold so they fire fast.
       const minSecondsGate = reactive ? REACTIVE_MIN_SECONDS_SINCE_LAST : MIN_SECONDS_SINCE_LAST;
       if (tickEntry.lastInsightAt > 0 && now - tickEntry.lastInsightAt < minSecondsGate * 1000) return;
-      const minCharsGate = reactive ? 10 : MIN_CHARS_SINCE_LAST;
+      const minCharsGate = reactive ? 0 : MIN_CHARS_SINCE_LAST;
       const newChars = currentCharCount - tickEntry.charCountAtLastInsight;
       if (newChars < minCharsGate) return;
 
