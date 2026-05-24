@@ -549,13 +549,16 @@ export default function SessionLive() {
         </div>
 
         <div className="flex items-center gap-2 flex-none">
-          {/* Mobile-only Settings gear — opens a sheet with STT, language,
-              research, diarization toggles. */}
+          {/* Settings gear — visible on every device. Mobile users get the
+              one-stop sheet because their header is space-constrained;
+              desktop users get the same sheet so settings like "Speaker
+              detection" aren't mobile-only. The inline STT / Language /
+              Research buttons stay visible on desktop for fast access. */}
           {isSessionActive && (
             <Button
               variant="ghost"
               size="sm"
-              className="md:hidden gap-1.5 h-9 px-2.5 border border-border/50"
+              className="gap-1.5 h-9 px-2.5 border border-border/50"
               onClick={() => setSettingsSheetOpen(true)}
               data-testid="button-session-settings"
               aria-label="Session settings"
@@ -829,31 +832,56 @@ export default function SessionLive() {
                   </div>
                 ) : (
                   <>
-                    {allTranscripts.map((t) => (
-                      <div
-                        key={t.id}
-                        className="flex flex-col items-start animate-in fade-in slide-in-from-bottom-1 duration-150"
-                        data-testid={`transcript-entry-${t.id}`}
-                      >
-                        <div className="flex items-baseline gap-2 mb-1 ml-1">
-                          <span className="text-[10px] text-muted-foreground/40 font-mono tabular-nums">
-                            {formatTime(t.startMs)}
-                          </span>
-                          {t.isOptimistic && (
-                            <span className="text-[9px] font-mono text-muted-foreground/30 uppercase tracking-wider animate-pulse">
-                              saving…
-                            </span>
-                          )}
-                        </div>
+                    {(() => {
+                      // Only show speaker labels in the live view when
+                      // diarization actually produced distinct speakers.
+                      // A single label of "Speaker" means diarize was off.
+                      const distinct = new Set(allTranscripts.map((t) => t.speakerLabel));
+                      const showSpeakers =
+                        distinct.size > 1 || (distinct.size === 1 && !distinct.has("Speaker"));
+                      // Stable colour per speaker so the eye can follow.
+                      const speakerColors: Record<string, string> = {
+                        "Speaker A": "text-primary",
+                        "Speaker B": "text-amber-500",
+                        "Speaker C": "text-emerald-500",
+                        "Speaker D": "text-rose-500",
+                        "Speaker E": "text-violet-500",
+                      };
+                      return allTranscripts.map((t) => (
                         <div
-                          className={`px-4 py-2.5 rounded-2xl rounded-tl-sm max-w-[88%] text-sm leading-relaxed border bg-muted/40 border-border/30 text-foreground ${
-                            t.isOptimistic ? "opacity-75" : "opacity-100"
-                          }`}
+                          key={t.id}
+                          className="flex flex-col items-start animate-in fade-in slide-in-from-bottom-1 duration-150"
+                          data-testid={`transcript-entry-${t.id}`}
                         >
-                          {t.text}
+                          <div className="flex items-baseline gap-2 mb-1 ml-1">
+                            {showSpeakers && (
+                              <span
+                                className={`text-[10px] font-mono font-bold uppercase tracking-wider ${
+                                  speakerColors[t.speakerLabel] ?? "text-primary"
+                                }`}
+                              >
+                                {t.speakerLabel}
+                              </span>
+                            )}
+                            <span className="text-[10px] text-muted-foreground/40 font-mono tabular-nums">
+                              {formatTime(t.startMs)}
+                            </span>
+                            {t.isOptimistic && (
+                              <span className="text-[9px] font-mono text-muted-foreground/30 uppercase tracking-wider animate-pulse">
+                                saving…
+                              </span>
+                            )}
+                          </div>
+                          <div
+                            className={`px-4 py-2.5 rounded-2xl rounded-tl-sm max-w-[88%] text-sm leading-relaxed border bg-muted/40 border-border/30 text-foreground ${
+                              t.isOptimistic ? "opacity-75" : "opacity-100"
+                            }`}
+                          >
+                            {t.text}
+                          </div>
                         </div>
-                      </div>
-                    ))}
+                      ));
+                    })()}
 
                     {/* Live interim chunk */}
                     {speech.livePartial && (

@@ -27,8 +27,14 @@ export const deepgramProvider: SttProvider = {
 
     const lang = normalizeLang(opts.language);
 
+    // Model selection: nova-3 is sharper and more multilingual, but its
+    // diarization (speaker labels) is only reliable for English right now.
+    // When the user explicitly turned diarization on we drop to nova-2,
+    // which has well-tested speaker separation across en / de / es / fr.
+    const model = opts.diarize ? "nova-2" : "nova-3";
+
     const params = new URLSearchParams({
-      model: "nova-3",
+      model,
       language: lang,
       interim_results: "true",
       smart_format: "true",
