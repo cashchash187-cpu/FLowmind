@@ -515,7 +515,7 @@ export default function SessionLive() {
 
   return (
     <TooltipProvider delayDuration={300}>
-    <div className="flex flex-col h-[calc(100dvh-3.5rem)] md:h-[100dvh] bg-background overflow-hidden" data-testid="session-live-view">
+    <div className="flex flex-col w-full max-w-full h-[calc(100dvh-3.5rem)] md:h-[100dvh] bg-background overflow-hidden" data-testid="session-live-view">
       {/* Header */}
       <header className="flex-none h-16 border-b border-border/50 bg-card/50 backdrop-blur px-4 sm:px-6 flex items-center justify-between sticky top-0 z-20">
         <div className="flex items-center gap-3 min-w-0">
@@ -535,7 +535,7 @@ export default function SessionLive() {
           </h1>
           <Badge
             variant="outline"
-            className={`flex-none font-mono text-[10px] uppercase ${
+            className={`flex-none font-mono text-[10px] uppercase hidden sm:flex ${
               session.mode === "insight"
                 ? "text-amber-600 border-amber-500/40 bg-amber-500/5"
                 : ""
@@ -549,24 +549,20 @@ export default function SessionLive() {
         </div>
 
         <div className="flex items-center gap-2 flex-none">
-          {/* Settings gear — visible on every device. Mobile users get the
-              one-stop sheet because their header is space-constrained;
-              desktop users get the same sheet so settings like "Speaker
-              detection" aren't mobile-only. The inline STT / Language /
-              Research buttons stay visible on desktop for fast access. */}
-          {isSessionActive && (
-            <Button
-              variant="ghost"
-              size="sm"
-              className="gap-1.5 h-9 px-2.5 border border-border/50"
-              onClick={() => setSettingsSheetOpen(true)}
-              data-testid="button-session-settings"
-              aria-label="Session settings"
-            >
-              <Settings2 className="h-4 w-4" />
-              <span className="text-[10px] uppercase tracking-wider font-mono font-bold hidden sm:inline">Settings</span>
-            </Button>
-          )}
+          {/* Settings gear — ALWAYS visible (active OR idle OR ended) so
+              users can adjust language / engine / diarization at any time
+              and on any device. */}
+          <Button
+            variant="ghost"
+            size="sm"
+            className="gap-1.5 h-9 px-2.5 border border-border/50"
+            onClick={() => setSettingsSheetOpen(true)}
+            data-testid="button-session-settings"
+            aria-label="Session settings"
+          >
+            <Settings2 className="h-4 w-4" />
+            <span className="text-[10px] uppercase tracking-wider font-mono font-bold hidden sm:inline">Settings</span>
+          </Button>
 
           {/* STT engine — desktop only; mobile users reach it via Settings. */}
           {isSessionActive && (
@@ -683,50 +679,8 @@ export default function SessionLive() {
             </DropdownMenu>
           )}
 
-          {/* Research button — desktop only; mobile users reach it via Settings. */}
-          {researchAvailable && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                {canResearch ? (
-                  <Button
-                    variant={researchPanelOpen ? "secondary" : "ghost"}
-                    size="sm"
-                    className={`hidden md:inline-flex gap-1.5 h-8 px-2 ${researchPanelOpen ? "" : "text-amber-600 hover:text-amber-600 hover:bg-amber-500/10 border border-amber-500/30 hover:border-amber-500/50"}`}
-                    onClick={() => setResearchPanelOpen((v) => !v)}
-                    data-testid="button-research-panel"
-                  >
-                    <Search className="h-3.5 w-3.5" />
-                    <span className="text-xs font-semibold">Research</span>
-                    {researchLimit > 0 && (
-                      <span className="hidden lg:inline text-[10px] text-amber-600/70 font-mono">
-                        {Math.max(0, researchLimit - researchUsed)}/{researchLimit}
-                      </span>
-                    )}
-                  </Button>
-                ) : (
-                  <Link href="/pricing">
-                    <Button
-                      variant="ghost"
-                      size="sm"
-                      className="hidden md:inline-flex gap-1.5 h-8 px-2 text-amber-600/50 border border-amber-500/20 hover:bg-amber-500/5 hover:text-amber-600/80"
-                      asChild={false}
-                    >
-                      <Lock className="h-3.5 w-3.5" />
-                      <span className="text-xs font-semibold">Research</span>
-                      <span className="text-[9px] font-mono bg-amber-500/15 text-amber-600 px-1 py-0.5 rounded">Pro</span>
-                    </Button>
-                  </Link>
-                )}
-              </TooltipTrigger>
-              <TooltipContent side="bottom" className="text-xs">
-                {canResearch
-                  ? researchLimit > 0
-                    ? `Live Research — ${Math.max(0, researchLimit - researchUsed)} / ${researchLimit} left this month`
-                    : "Unlimited research"
-                  : "Pro feature — upgrade to use Live Research"}
-              </TooltipContent>
-            </Tooltip>
-          )}
+          {/* Research button moved out of the header — now rendered next to
+              the AI mode buttons in the bottom bar (both mobile + desktop). */}
 
           {/* Auto-research toggle removed — the server-side insight engine
               now decides on its own when to fire a lookup (agentic flow).
@@ -757,7 +711,7 @@ export default function SessionLive() {
               size="sm"
               onClick={handleEndSession}
               disabled={endSession.isPending}
-              className="gap-2 font-mono uppercase tracking-wider text-xs"
+              className="gap-1.5 font-mono uppercase tracking-wider text-xs h-9 px-2.5"
               data-testid="button-end-session"
             >
               {endSession.isPending ? (
@@ -765,7 +719,7 @@ export default function SessionLive() {
               ) : (
                 <Square className="h-3.5 w-3.5 fill-current" />
               )}
-              End
+              <span className="hidden sm:inline">End</span>
             </Button>
           )}
         </div>
@@ -957,6 +911,41 @@ export default function SessionLive() {
                       <Loader2 className="h-4 w-4 animate-spin text-primary ml-1" />
                     )}
                   </div>
+
+                  {/* Research lives next to the AI modes now (same row). */}
+                  {researchAvailable && (
+                    <>
+                      <div className="h-5 w-px bg-border mx-1" />
+                      {canResearch ? (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          className={`rounded-xl h-8 px-3 text-xs gap-1.5 ${
+                            researchPanelOpen
+                              ? "text-amber-700 bg-amber-500/10"
+                              : "text-amber-600 hover:text-amber-600 hover:bg-amber-500/10 border border-amber-500/30"
+                          }`}
+                          onClick={() => setResearchPanelOpen((v) => !v)}
+                          data-testid="button-research-panel"
+                        >
+                          <Search className="h-3 w-3" />
+                          <span>Research</span>
+                        </Button>
+                      ) : (
+                        <Link href="/pricing">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            className="rounded-xl h-8 px-3 text-xs gap-1.5 text-amber-600/60 border border-amber-500/20"
+                          >
+                            <Lock className="h-3 w-3" />
+                            <span>Research</span>
+                            <span className="text-[9px] font-mono bg-amber-500/15 text-amber-600 px-1 py-0.5 rounded">Pro</span>
+                          </Button>
+                        </Link>
+                      )}
+                    </>
+                  )}
                 </div>
 
                 {allTranscripts.length > 0 && (
@@ -1021,8 +1010,10 @@ export default function SessionLive() {
         {(isSessionActive || session.status === "idle") && (
           <div className="md:hidden flex-none px-3 pt-2 pb-3 border-t border-border/40 bg-background">
             <div className="flex flex-col gap-2 max-w-md mx-auto">
-              {/* AI mode grid */}
-              <div className="grid grid-cols-4 gap-1.5 bg-card/90 backdrop-blur-xl border border-border rounded-2xl p-2 shadow-sm">
+              {/* AI mode grid — 4 modes + Research as the 5th cell (when
+                  research is available) so it sits with the other on-demand
+                  AI actions instead of being buried in Settings. */}
+              <div className={`grid ${researchAvailable ? "grid-cols-5" : "grid-cols-4"} gap-1.5 bg-card/90 backdrop-blur-xl border border-border rounded-2xl p-2 shadow-sm`}>
                 {AI_MODES.map(({ mode, label, icon: Icon }) => (
                   <button
                     key={mode}
@@ -1038,6 +1029,37 @@ export default function SessionLive() {
                     </span>
                   </button>
                 ))}
+                {researchAvailable && (
+                  canResearch ? (
+                    <button
+                      type="button"
+                      onClick={() => setResearchPanelOpen((v) => !v)}
+                      className={`flex flex-col items-center gap-1 py-2 rounded-xl transition-colors ${
+                        researchPanelOpen
+                          ? "bg-amber-500/15 text-amber-600"
+                          : "text-amber-600 hover:bg-amber-500/10 active:bg-amber-500/15 border border-amber-500/30"
+                      }`}
+                      data-testid="button-research-panel"
+                    >
+                      <Search className="h-5 w-5" />
+                      <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">
+                        Research
+                      </span>
+                    </button>
+                  ) : (
+                    <Link href="/pricing">
+                      <button
+                        type="button"
+                        className="w-full flex flex-col items-center gap-1 py-2 rounded-xl text-amber-600/70 border border-amber-500/20 hover:bg-amber-500/5"
+                      >
+                        <Lock className="h-5 w-5" />
+                        <span className="text-[10px] font-mono uppercase tracking-wider font-semibold">
+                          Research
+                        </span>
+                      </button>
+                    </Link>
+                  )
+                )}
               </div>
 
               {/* Big mic + visualizer */}
@@ -1283,41 +1305,7 @@ export default function SessionLive() {
               </button>
             </div>
 
-            {/* ── Research ─────────────────────────────────────────────── */}
-            {researchAvailable && (
-              <div>
-                <div className="flex items-center gap-2 mb-2 text-xs font-mono uppercase tracking-widest text-muted-foreground">
-                  <Search className="h-3.5 w-3.5" />
-                  Live Research
-                </div>
-                {canResearch ? (
-                  <button
-                    type="button"
-                    onClick={() => { setSettingsSheetOpen(false); setResearchPanelOpen(true); }}
-                    className="w-full flex items-center gap-3 px-3 py-3 rounded-xl border border-amber-500/30 bg-amber-500/5 text-amber-600 text-sm font-mono"
-                  >
-                    <Search className="h-4 w-4" />
-                    <span className="flex-1 text-left uppercase tracking-wider text-xs font-semibold">Open research panel</span>
-                    {researchLimit > 0 && (
-                      <span className="text-[10px] text-amber-600/70">
-                        {Math.max(0, researchLimit - researchUsed)}/{researchLimit}
-                      </span>
-                    )}
-                  </button>
-                ) : (
-                  <Link href="/pricing">
-                    <button
-                      type="button"
-                      className="w-full flex items-center gap-3 px-3 py-3 rounded-xl border border-amber-500/20 bg-amber-500/5 text-amber-600/80 text-sm font-mono"
-                    >
-                      <Lock className="h-4 w-4" />
-                      <span className="flex-1 text-left uppercase tracking-wider text-xs font-semibold">Upgrade to use Research</span>
-                      <Badge variant="outline" className="text-[10px] text-amber-600 border-amber-500/30 bg-amber-500/5">Pro</Badge>
-                    </button>
-                  </Link>
-                )}
-              </div>
-            )}
+            {/* Research lives in the bottom AI bar now, not here. */}
 
           </div>
         </SheetContent>

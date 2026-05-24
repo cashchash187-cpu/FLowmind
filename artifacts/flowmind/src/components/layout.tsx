@@ -214,9 +214,9 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </div>
 
         {/* ── Main content ─────────────────────────────────────────────────── */}
-        <div className="flex flex-1 flex-col md:pl-64">
+        <div className="flex flex-1 flex-col min-w-0 md:pl-64">
           <div className="h-14 md:hidden flex-none" />
-          <main className="flex-1 relative z-0 overflow-x-hidden">
+          <main className="flex-1 min-w-0 relative z-0 overflow-x-hidden">
             {children}
           </main>
         </div>
