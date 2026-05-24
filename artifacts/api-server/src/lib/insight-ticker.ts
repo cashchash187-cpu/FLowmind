@@ -29,7 +29,17 @@ interface TickerEntry {
   lastInsightAt: number;
   charCountAtLastInsight: number;
   lastResearchAt: number;
+  /** How many insights have fired since the last meaningful new speech.
+      Reset to 0 every time `MEANINGFUL_NEW_CHARS` of fresh text arrives.
+      Capped at MAX_INSIGHTS_PER_BURST so a single user question can't
+      generate dozens of paraphrased tips. */
+  burstCount: number;
+  /** Char count at the time `burstCount` was last reset. */
+  burstResetCharCount: number;
 }
+
+const MAX_INSIGHTS_PER_BURST = 2;
+const MEANINGFUL_NEW_CHARS = 80;
 
 const tickers = new Map<number, TickerEntry>();
 const MAX_TICKERS = 500;
@@ -62,6 +72,8 @@ export function startInsightTicker(userId: number, sessionId: number) {
     lastInsightAt: 0,
     charCountAtLastInsight: 0,
     lastResearchAt: 0,
+    burstCount: 0,
+    burstResetCharCount: 0,
   };
 
   const interval = setInterval(async () => {
@@ -94,6 +106,8 @@ export function startInsightTicker(userId: number, sessionId: number) {
         tickEntry.lastInsightAt = 0;
         tickEntry.charCountAtLastInsight = 0;
         tickEntry.lastResearchAt = 0;
+        tickEntry.burstCount = 0;
+        tickEntry.burstResetCharCount = 0;
       }
 
       // 2. Gate: recent heartbeat (session considered idle if hb too old).
@@ -125,8 +139,25 @@ export function startInsightTicker(userId: number, sessionId: number) {
       const recentTail = fullText.slice(-1500);
       const reactive = looksLikeQuestion(newSpeech) || looksLikeQuestion(recentTail);
 
-      // 4. Gates. Reactive insights (direct question still in the air) get
-      //    a shorter cooldown and a smaller char threshold so they fire fast.
+      // Reset the burst counter when ENOUGH new speech has arrived since the
+      // last reset. Without this a single lingering question would let the
+      // engine fire forever — 15 insights for one short question was the
+      // real-world failure mode.
+      const newCharsSinceBurstReset = currentCharCount - tickEntry.burstResetCharCount;
+      if (newCharsSinceBurstReset >= MEANINGFUL_NEW_CHARS) {
+        tickEntry.burstCount = 0;
+        tickEntry.burstResetCharCount = currentCharCount;
+      }
+
+      // 4a. Hard burst cap: after MAX_INSIGHTS_PER_BURST insights on the
+      //     same speech without meaningful new content, shut up. Even if the
+      //     LLM is enthusiastic, the user gets a quiet feed instead of spam.
+      if (tickEntry.burstCount >= MAX_INSIGHTS_PER_BURST) {
+        logger.debug({ userId, sessionId: session.id, burstCount: tickEntry.burstCount, newCharsSinceBurstReset }, "[INSIGHT-TICKER] burst-cap hold");
+        return;
+      }
+
+      // 4b. Time + char gates. Reactive insights get a shorter cooldown.
       const minSecondsGate = reactive ? REACTIVE_MIN_SECONDS_SINCE_LAST : MIN_SECONDS_SINCE_LAST;
       const secondsSinceLast = tickEntry.lastInsightAt > 0 ? (now - tickEntry.lastInsightAt) / 1000 : Infinity;
       if (tickEntry.lastInsightAt > 0 && now - tickEntry.lastInsightAt < minSecondsGate * 1000) {
@@ -139,7 +170,7 @@ export function startInsightTicker(userId: number, sessionId: number) {
         logger.debug({ userId, sessionId: session.id, newChars, gate: minCharsGate, reactive }, "[INSIGHT-TICKER] char-gate hold");
         return;
       }
-      logger.info({ userId, sessionId: session.id, reactive, newChars, ageMin: ((now - (allRows[0]?.startMs ?? now)) / 60000).toFixed(1) }, "[INSIGHT-TICKER] decide()");
+      logger.info({ userId, sessionId: session.id, reactive, newChars, burstCount: tickEntry.burstCount, ageMin: ((now - (allRows[0]?.startMs ?? now)) / 60000).toFixed(1) }, "[INSIGHT-TICKER] decide()");
 
       // 5. Build the rich conversation context (rolling summary cache).
       const sessionStartedAtMs = session.createdAt
@@ -256,6 +287,7 @@ export function startInsightTicker(userId: number, sessionId: number) {
         status: "new",
       });
       tickEntry.lastInsightAt = now;
+      tickEntry.burstCount += 1;
     } catch (err) {
       logger.error({ err, userId }, "[INSIGHT-TICKER] Tick error");
     }

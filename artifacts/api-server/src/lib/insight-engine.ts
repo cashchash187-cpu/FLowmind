@@ -89,6 +89,12 @@ D) FOLLOW-UP — The user asked a COMPOUND question with two or more parts (e.g.
 ✗ "Differenzierung stärken" / "Wettbewerbsfähigkeit verbessern" — that's a category, not an idea.
 ✗ ANY paraphrase of an entry in "Already said".
 
+═══ TOPIC SATURATION ═══
+Counting the "Already said" list: if 2 or more entries already address the
+SAME topic / question / theme that the speakers are still on, you've said
+enough. shouldFire=false. The user can ask a follow-up to unlock you. A
+real advisor doesn't keep volunteering more angles on a settled topic.
+
 ═══ FEW-SHOT EXAMPLES ═══
 
 Example 1
@@ -246,13 +252,17 @@ export async function decideInsight(
       : null;
 
   // Server-side dedup safety net. Even with a strong "don't repeat" prompt
-  // the LLM still occasionally restates a previous tip in slightly different
-  // words. We compare token overlap (Jaccard on word sets, language-agnostic)
-  // and drop if it's too similar to any previous insight.
+  // the LLM still slips through paraphrases — real users reported 14
+  // insights all saying "E-Mobilität + Full-Service-Leasing für KMUs" in
+  // slightly different words. 0.35 is aggressive but catches that case;
+  // false negatives are fine, the next tick will produce something fresh.
   if (tip && ctx.previousInsights.length) {
-    const similar = ctx.previousInsights.some((prev) => jaccardSimilarity(tip, prev) >= 0.55);
+    const similar = ctx.previousInsights.some((prev) => {
+      const sim = jaccardSimilarity(tip, prev);
+      return sim >= 0.35;
+    });
     if (similar) {
-      logger.info({}, "[INSIGHT-ENGINE] dropped near-duplicate tip");
+      logger.info({ tip: tip.slice(0, 80) }, "[INSIGHT-ENGINE] dropped near-duplicate tip");
       return { shouldFire: false, needsResearch: false, researchQuery: null, tip: null, category: "question" };
     }
   }
