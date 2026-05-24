@@ -758,9 +758,9 @@ export default function SessionLive() {
       {/* Main scroll area — flex-col on mobile so the insight dock can sit
           below the transcript without a modal backdrop. Switches back to
           flex-row on md+ where the insight panel is a side column. */}
-      <div className="flex-1 flex flex-col md:flex-row overflow-hidden relative">
-        <div className="flex-1 flex overflow-hidden min-h-0">
-          <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 flex flex-col md:flex-row overflow-hidden">
+        <div className="flex-1 flex overflow-hidden min-h-0 relative">
+          <div className="flex-1 flex flex-col overflow-hidden relative">
             <ScrollArea className="flex-1 px-4 sm:px-6 py-4">
               <div className="max-w-3xl mx-auto space-y-3 pb-4 md:pb-44">
                 {transcriptsLoading && !optimistic.length ? (
