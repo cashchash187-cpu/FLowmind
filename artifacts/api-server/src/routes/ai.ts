@@ -17,6 +17,7 @@ import {
 import { openai, LLM_MODEL, llmConfigured } from "@workspace/integrations-openai-ai-server";
 import { getOrCreateUsage } from "../lib/usage-helpers";
 import { decideInsight, synthesizeInsight, fallbackTipFromResearch } from "../lib/insight-engine";
+import { buildConversationContext, looksLikeQuestion } from "../lib/conversation-context";
 import { isResearchAvailable, research } from "../lib/research-provider";
 import { getPlanLimits } from "../lib/plans";
 
@@ -321,14 +322,25 @@ router.post("/ai/insights/generate", async (req, res): Promise<void> => {
   const session = await getOwnedSession(Number(sessionId), req.user!.id, req.user!.isAdmin);
   if (!session || session.status !== "active") { res.status(204).end(); return; }
 
-  const recentRows = await db
-    .select({ text: transcriptsTable.text })
+  // Full chronological transcript so the engine sees the whole arc, not just
+  // the last sentence. The rolling summary cache keeps the LLM payload small
+  // for long meetings.
+  const allRows = await db
+    .select({ text: transcriptsTable.text, startMs: transcriptsTable.startMs })
     .from(transcriptsTable)
     .where(eq(transcriptsTable.sessionId, Number(sessionId)))
-    .orderBy(desc(transcriptsTable.startMs))
-    .limit(50);
+    .orderBy(asc(transcriptsTable.startMs));
+  const fullText = allRows.map((r) => r.text).join(" ");
 
-  const recentText = recentRows.map((r) => r.text).reverse().join(" ").slice(-2400);
+  const sessionStartedAtMs = session.createdAt
+    ? new Date(session.createdAt).getTime()
+    : (allRows[0]?.startMs ?? Date.now());
+  const ctx = await buildConversationContext({
+    sessionId: Number(sessionId),
+    sessionStartedAtMs,
+    fullText,
+    recentChars: 2500,
+  });
 
   // Recent insights for repeat-suppression.
   const recentInsights = await db
@@ -340,7 +352,13 @@ router.post("/ai/insights/generate", async (req, res): Promise<void> => {
   const previousInsightTips = recentInsights.map((r) => r.suggestion).filter(Boolean);
 
   // Two-pass agentic flow: decide -> (optional research) -> synthesize.
-  const decision = await decideInsight(recentText, previousInsightTips);
+  const decision = await decideInsight({
+    ageMinutes: ctx.ageMinutes,
+    olderSummary: ctx.olderSummary,
+    recentText: ctx.recentText,
+    previousInsights: previousInsightTips,
+    reactive: looksLikeQuestion(ctx.recentText.slice(-600)),
+  });
   if (!decision || !decision.shouldFire) { res.status(204).end(); return; }
 
   let finalTip = decision.tip ?? "";
@@ -361,7 +379,7 @@ router.post("/ai/insights/generate", async (req, res): Promise<void> => {
           trigger: "auto",
           status: "ok",
         });
-        const synth = await synthesizeInsight(recentText, result.answer, result.sources);
+        const synth = await synthesizeInsight(ctx.recentText, result.answer, result.sources);
         if (synth) {
           finalTip = synth.tip;
           finalCategory = synth.category;

@@ -54,62 +54,99 @@ const VALID_CATEGORIES: InsightCategory[] = ["opportunity", "risk", "connection"
 
 // ─── Pass 1: decide ─────────────────────────────────────────────────────────
 
-const DECIDE_PROMPT = `You are an experienced strategic advisor sitting next to a listener in a LIVE business conversation. Your job is to whisper insights when they add real value — like a sharp colleague who only speaks up when it matters. You have a research tool available; when concrete facts (numbers, names, companies, regulations) would help, you flag them for lookup instead of bluffing.
+const DECIDE_PROMPT = `You are an experienced strategic advisor who has been QUIETLY SITTING IN this live business meeting from the start. You hear everything. You speak up only when you genuinely add value — like a sharp colleague who knows when to whisper and when to stay silent.
 
-You will receive TWO things:
-1. The most recent transcript.
-2. The list of insights you've ALREADY given in this same conversation (each is a one-line summary).
+You will receive:
+1. How long the meeting has been going (in minutes).
+2. A bullet-point summary of EVERYTHING said earlier in this meeting (themes, decisions, open questions, recurring concerns). Treat this as ground truth — you DO remember it.
+3. The most recent verbatim transcript fragment.
+4. The list of insights you have ALREADY given in this conversation (one-line summaries — never repeat them).
+5. A flag whether the latest fragment contains a DIRECT QUESTION you should react to.
 
 Decide whether to speak up RIGHT NOW.
 
-WHEN TO SPEAK UP — there are TWO distinct cases:
-A) FACT QUESTION — the speakers want concrete data (numbers, market sizes, company details, regulations, dates, definitions). Set needsResearch=true with a targeted researchQuery. Leave "tip" as null — the synthesizer will write it AFTER the lookup.
-B) STRATEGY / OPINION / ANALYSIS — the speakers ask "what should they do", "how would you approach this", "what's the risk", "what would you suggest", or anything that wants YOUR take. Set needsResearch=false and write the tip directly — a sharp, specific, opinionated recommendation. Don't punt to research for opinions.
+THREE distinct trigger cases:
 
-Also speak up when:
-- A specific opportunity is being missed.
-- A risk or hidden assumption is visible.
-- A useful callback to something said earlier this conversation.
-- A sharp question the listener should ask right now.
+A) REACTIVE — Someone just asked a direct question. ALWAYS speak up unless the same question was answered by you very recently in "Already said". If the question wants concrete data → needsResearch=true. If it wants opinion / advice → write the tip directly. Be fast and on-point.
+
+B) STRATEGIC — Reading across the whole meeting (older summary + recent), you spot something the listener should know NOW: a pattern (e.g. "they've raised price concerns 3 times — push ROI angle"), a missed opportunity, a contradiction with something said 15 minutes ago, an unstated assumption that risks the deal. These insights LEVERAGE the older context — they're things only someone who heard the whole meeting could spot.
+
+C) FACT GAP — A specific company / regulation / number / person was just mentioned that the listener probably can't recall on the fly. Set needsResearch=true with a targeted researchQuery.
 
 WHEN TO STAY SILENT (shouldFire=false):
-- Just pleasantries or basic context.
-- The same point you've ALREADY made in a previous insight in this conversation (check the "Already said" list — never repeat the same fact or recommendation).
-- Generic noise ("consider their needs", "build rapport").
+- Pleasantries, basic introductions, idle chatter.
+- A point you have ALREADY made (check "Already said" carefully — even a paraphrase counts as a repeat).
+- Generic coaching ("listen actively", "build rapport") — that's noise.
+- You're not confident you'd add value.
 
 Output ONLY this JSON (no markdown, no code fences):
 {
   "shouldFire": boolean,
   "needsResearch": boolean,
-  "researchQuery": string | null,   // concise web query (max 12 words) when needsResearch
+  "researchQuery": string | null,   // targeted web query (max 12 words) when needsResearch
   "tip": string | null,             // REQUIRED when needsResearch=false AND shouldFire=true
   "category": "opportunity" | "risk" | "connection" | "question"
 }
 
-Rules:
-- Tip (when given directly) is 1-3 complete sentences, max ~60 words, specific and concrete.
-- Match the transcript's language exactly (German → German, English → English).
-- Never invent factual data. If you'd be guessing on a number, set needsResearch=true.
-- NEVER repeat a point that's in the "Already said" list. If the new question is on a topic you've covered, either advance the angle (give a NEW insight on the same topic) or stay silent.`;
+Hard rules:
+- Tip is 1-3 complete sentences, max ~60 words, specific and concrete, in the conversation's exact language (German → German, English → English, etc.).
+- When a tip leverages older context, briefly anchor it ("Earlier they mentioned X — now would be the moment to …").
+- Never invent factual data; lookup instead.
+- NEVER repeat a point that's already in "Already said". When a topic comes up again, advance the angle or stay silent.`;
+
+export interface DecideContext {
+  /** Minutes since the meeting began. */
+  ageMinutes: number;
+  /** Cached summary of speech before `recentText`. Null when the meeting is
+      still short enough that recent IS everything. */
+  olderSummary: string | null;
+  /** Last ~2500 chars of speech, chronological. */
+  recentText: string;
+  /** Previous insights given this session (one-line each). */
+  previousInsights: string[];
+  /** Did the just-spoken text contain a direct question? */
+  reactive: boolean;
+}
 
 export async function decideInsight(
-  recentText: string,
-  previousInsights: string[] = [],
+  ctxOrText: DecideContext | string,
+  // Back-compat: old callers passed (recentText, previousInsights).
+  legacyPrevious: string[] = [],
 ): Promise<InsightDecision | null> {
   if (!llmConfigured) return null;
-  const text = recentText.trim();
-  if (text.length < 40) return null;
+
+  const ctx: DecideContext = typeof ctxOrText === "string"
+    ? {
+        ageMinutes: 0,
+        olderSummary: null,
+        recentText: ctxOrText,
+        previousInsights: legacyPrevious,
+        reactive: false,
+      }
+    : ctxOrText;
+
+  const text = ctx.recentText.trim();
+  if (text.length < 40 && !ctx.reactive) return null;
 
   // Last few insights as one bullet per line — keeps the context small but
   // gives the LLM enough to recognise its own past output and not repeat it.
-  const alreadySaid = previousInsights
+  const alreadySaid = ctx.previousInsights
     .slice(0, 6)
     .map((t, i) => `${i + 1}. ${t.replace(/\s+/g, " ").slice(0, 240)}`)
     .join("\n");
 
+  const ageLine = ctx.ageMinutes >= 1
+    ? `Meeting age: ${ctx.ageMinutes.toFixed(1)} minutes.`
+    : `Meeting age: just started.`;
+
   const userMsg =
-    `Recent transcript:\n\n${text}\n\n` +
-    `Already said (most recent first — never repeat these):\n${alreadySaid || "(nothing yet)"}\n\n` +
+    `${ageLine}\n\n` +
+    (ctx.olderSummary
+      ? `Earlier in this meeting (summary):\n${ctx.olderSummary}\n\n`
+      : "") +
+    `Recent transcript (verbatim, most recent first below):\n${text}\n\n` +
+    `Already said (never repeat — even paraphrased):\n${alreadySaid || "(nothing yet)"}\n\n` +
+    `Direct question in recent text: ${ctx.reactive ? "YES — react fast." : "no"}\n\n` +
     `Decide now.`;
 
   let raw: string;

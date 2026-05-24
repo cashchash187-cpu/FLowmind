@@ -1,20 +1,25 @@
 import { db } from "@workspace/db";
 import { sessionsTable, transcriptsTable, aiAssistsTable, usersTable, researchResultsTable } from "@workspace/db";
-import { eq, and, sql, desc } from "drizzle-orm";
+import { eq, and, desc, asc } from "drizzle-orm";
 import { decideInsight, synthesizeInsight, fallbackTipFromResearch } from "./insight-engine";
+import { buildConversationContext, looksLikeQuestion } from "./conversation-context";
 import { isResearchAvailable, research } from "./research-provider";
 import { getPlanLimits } from "./plans";
 import { logger } from "./logger";
 
-// With LLM_MODEL=gemini-2.5-flash-lite the free-tier cap is 15 RPM. Each
-// insight uses at most 2 LLM calls (decide + synth), so 6 insights/min is
-// the ceiling. We aim for ~4/min by gating below; that leaves headroom for
-// the synth retries.
-const TICK_INTERVAL_MS = 6_000;         // check every 6s — feels responsive
-const MIN_CHARS_SINCE_LAST = 40;        // >=40 new chars of speech required
-const MIN_SECONDS_SINCE_LAST = 12;      // >=12s between insights
+// The ticker checks frequently. The decide() call is cheap (one LLM message);
+// expensive work (research, synth) only fires when decide() says shouldFire.
+// On a normal meeting the LLM hits ~1 decide/3s = 20/min but most of those
+// return shouldFire=false and don't trigger downstream calls.
+//
+// REACTIVE override: when the newly-arrived text contains a direct question
+// we ignore the regular min-seconds-since-last gate and fire within ~3 s.
+const TICK_INTERVAL_MS = 3_000;         // check every 3s
+const MIN_CHARS_SINCE_LAST = 30;        // >=30 new chars of speech required
+const MIN_SECONDS_SINCE_LAST = 8;       // >=8s between strategic insights
+const REACTIVE_MIN_SECONDS_SINCE_LAST = 3; // ... but as little as 3s for direct questions
 const HEARTBEAT_STALE_MS = 120_000;     // session considered idle if hb > 2min ago
-const RECENT_TRANSCRIPT_CHARS = 2400;   // chars of recent speech to send to the LLM
+const RECENT_TRANSCRIPT_CHARS = 2500;   // chars of recent speech to send to the LLM
 
 const LOG_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -91,40 +96,49 @@ export function startInsightTicker(userId: number, sessionId: number) {
         tickEntry.lastResearchAt = 0;
       }
 
-      // 2. Gate: recent heartbeat (< 60s ago)
+      // 2. Gate: recent heartbeat (session considered idle if hb too old).
       const heartbeatAge = session.lastHeartbeatAt
         ? Date.now() - new Date(session.lastHeartbeatAt).getTime()
         : Infinity;
       if (heartbeatAge > HEARTBEAT_STALE_MS) return;
 
-      // 3. Gate: minimum time since last insight
       const now = Date.now();
-      if (tickEntry.lastInsightAt > 0 && now - tickEntry.lastInsightAt < MIN_SECONDS_SINCE_LAST * 1000) return;
 
-      // 4. Gate: minimum new transcript chars since last insight
-      const [charResult] = await db
-        .select({ total: sql<number>`coalesce(sum(length(${transcriptsTable.text})), 0)` })
-        .from(transcriptsTable)
-        .where(eq(transcriptsTable.sessionId, session.id));
-
-      const currentCharCount = Number(charResult?.total ?? 0);
-      const newChars = currentCharCount - tickEntry.charCountAtLastInsight;
-      if (newChars < MIN_CHARS_SINCE_LAST) return;
-
-      // 5. Pull recent transcript for the LLM
-      const recentRows = await db
-        .select({ text: transcriptsTable.text })
+      // 3. Pull the full transcript (chronological) so we can both detect
+      //    new content + feed the full conversation into the LLM context.
+      const allRows = await db
+        .select({ text: transcriptsTable.text, startMs: transcriptsTable.startMs })
         .from(transcriptsTable)
         .where(eq(transcriptsTable.sessionId, session.id))
-        .orderBy(desc(transcriptsTable.startMs))
-        .limit(25);
+        .orderBy(asc(transcriptsTable.startMs));
+      const fullText = allRows.map((r) => r.text).join(" ");
+      const currentCharCount = fullText.length;
 
-      let recentText = recentRows.map((r) => r.text).reverse().join(" ");
-      if (recentText.length > RECENT_TRANSCRIPT_CHARS) {
-        recentText = recentText.slice(-RECENT_TRANSCRIPT_CHARS);
-      }
+      // Newly-spoken text since the last insight — used both for the
+      // char-gate and for question detection.
+      const newSpeech = fullText.slice(tickEntry.charCountAtLastInsight);
+      const reactive = looksLikeQuestion(newSpeech);
 
-      // 5b. Pull the last few insights so decideInsight can avoid repeating itself.
+      // 4. Gates. Reactive insights (direct question) get a shorter cooldown
+      //    and a smaller char threshold so they fire fast.
+      const minSecondsGate = reactive ? REACTIVE_MIN_SECONDS_SINCE_LAST : MIN_SECONDS_SINCE_LAST;
+      if (tickEntry.lastInsightAt > 0 && now - tickEntry.lastInsightAt < minSecondsGate * 1000) return;
+      const minCharsGate = reactive ? 10 : MIN_CHARS_SINCE_LAST;
+      const newChars = currentCharCount - tickEntry.charCountAtLastInsight;
+      if (newChars < minCharsGate) return;
+
+      // 5. Build the rich conversation context (rolling summary cache).
+      const sessionStartedAtMs = session.createdAt
+        ? new Date(session.createdAt).getTime()
+        : (allRows[0]?.startMs ?? Date.now());
+      const ctx = await buildConversationContext({
+        sessionId: session.id,
+        sessionStartedAtMs,
+        fullText,
+        recentChars: RECENT_TRANSCRIPT_CHARS,
+      });
+
+      // 5b. Last few insights to suppress repeats.
       const recentInsights = await db
         .select({ suggestion: aiAssistsTable.suggestion })
         .from(aiAssistsTable)
@@ -133,11 +147,17 @@ export function startInsightTicker(userId: number, sessionId: number) {
         .limit(6);
       const previousInsightTips = recentInsights.map((r) => r.suggestion).filter(Boolean);
 
-      // 6. Pass 1 — decide whether to speak and whether facts are needed.
-      const decision = await decideInsight(recentText, previousInsightTips);
+      // 6. Pass 1 — decide whether to speak (and whether facts are needed).
+      const decision = await decideInsight({
+        ageMinutes: ctx.ageMinutes,
+        olderSummary: ctx.olderSummary,
+        recentText: ctx.recentText,
+        previousInsights: previousInsightTips,
+        reactive,
+      });
 
-      // Advance the char baseline even on silence so we wait for genuinely new
-      // speech before re-querying the same context.
+      // Advance the char baseline even on silence so we wait for genuinely
+      // new speech before re-querying the same context.
       tickEntry.charCountAtLastInsight = currentCharCount;
       if (!decision || !decision.shouldFire) return;
 
@@ -179,7 +199,7 @@ export function startInsightTicker(userId: number, sessionId: number) {
               });
               logger.info({ userId, sessionId: session.id, sources: result.sources.length }, "[INSIGHT-TICKER] research saved");
 
-              const synth = await synthesizeInsight(recentText, result.answer, result.sources);
+              const synth = await synthesizeInsight(ctx.recentText, result.answer, result.sources);
               if (synth) {
                 finalTip = synth.tip;
                 finalCategory = synth.category;
