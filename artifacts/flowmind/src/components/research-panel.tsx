@@ -78,8 +78,14 @@ export function ResearchPanel({
           return;
         }
 
-        const newResult: ResearchResultData = await res.json();
-        setResults((prev) => [newResult, ...prev]);
+        // Newer server returns { ...firstResult, results: [...] } so the
+        // panel can fan in all per-query results at once for compound
+        // questions. Older shape (single object) still works.
+        const payload = await res.json() as ResearchResultData & { results?: ResearchResultData[] };
+        const newResults: ResearchResultData[] = Array.isArray(payload.results) && payload.results.length
+          ? payload.results
+          : [payload];
+        setResults((prev) => [...newResults, ...prev]);
         setQuery("");
         setQueryOpen(false);
       } catch {

@@ -14,7 +14,7 @@ import { logger } from "./logger";
 //
 // REACTIVE override: when the newly-arrived text contains a direct question
 // we ignore the regular min-seconds-since-last gate and fire within ~3 s.
-const TICK_INTERVAL_MS = 3_000;         // check every 3s
+const TICK_INTERVAL_MS = 2_000;         // check every 2s (was 3s)
 const MIN_CHARS_SINCE_LAST = 30;        // >=30 new chars of speech required
 const MIN_SECONDS_SINCE_LAST = 8;       // >=8s between strategic insights
 const REACTIVE_MIN_SECONDS_SINCE_LAST = 3; // ... but as little as 3s for direct questions

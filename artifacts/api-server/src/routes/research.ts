@@ -18,16 +18,15 @@ async function getOwnedSession(sessionId: number, userId: number, isAdmin: boole
 }
 
 /**
- * Pull a research-friendly query out of the recent transcript. The old
- * implementation just grabbed the last sentence — so a transcript ending in
- * "Und was können wir als Deutsche Leasing dagegen machen?" produced a
- * literal Google search for that phrase, which returned bizarre customer-
- * complaint pages instead of the actual data behind the conversation.
+ * Read the transcript and extract a SET of research-friendly queries — one
+ * per distinct fact-question or strategic angle the user is engaging with.
+ * Compound questions like "Gibt es so eine Funktion am Markt? Und hat DL
+ * Vorteile?" need TWO separate web searches; squeezing both into one query
+ * misses half of what the speaker wants.
  *
- * Now: ask the LLM (one cheap call) to read the recent transcript and emit
- * a concise, fact-seeking web query. Falls back to a heuristic on failure.
+ * Returns 1-3 queries. Heuristic fallback when the LLM is unavailable.
  */
-async function deriveQuery(sessionId: number): Promise<string> {
+async function deriveQueries(sessionId: number): Promise<string[]> {
   const rows = await db
     .select({ text: transcriptsTable.text })
     .from(transcriptsTable)
@@ -35,13 +34,12 @@ async function deriveQuery(sessionId: number): Promise<string> {
     .orderBy(asc(transcriptsTable.startMs));
 
   const recent = rows.map((r) => r.text).join(" ").trim();
-  if (!recent) return "Key topics from this meeting";
+  if (!recent) return ["Key topics from this meeting"];
 
-  // ── Heuristic fallback (also used if LLM is unavailable) ──────────────────
-  function heuristic(): string {
+  function heuristic(): string[] {
     const tail = recent.slice(-600);
     const sentences = tail.split(/[.!?]+/).filter(Boolean);
-    return (sentences[sentences.length - 1]?.trim() ?? tail).slice(0, 120);
+    return [(sentences[sentences.length - 1]?.trim() ?? tail).slice(0, 120)];
   }
 
   if (!llmConfigured) return heuristic();
@@ -49,22 +47,34 @@ async function deriveQuery(sessionId: number): Promise<string> {
   try {
     const completion = await openai.chat.completions.create({
       model: LLM_MODEL,
-      max_tokens: 200,
+      max_tokens: 300,
       temperature: 0.2,
+      response_format: { type: "json_object" },
       messages: [
         {
           role: "system",
           content:
-            "You turn the recent transcript of a business meeting into ONE short web search query (max 12 words) that would surface the FACTS the speakers actually want — numbers, dates, definitions, company info. " +
-            "Drop conversational filler ('was können wir machen', 'wie sollten wir reagieren'). " +
-            "Keep proper nouns, numbers and the time-frame. Match the conversation's language. " +
-            "Output ONLY the raw query string, no quotes, no explanation.",
+            "You read a meeting transcript and extract UP TO 3 short web search queries (max 12 words each) that would surface the FACTS the speakers actually want — numbers, dates, definitions, company info, competitive landscape. " +
+            "Cover EVERY distinct fact-question or strategic angle in the transcript. Compound questions get separate queries. Drop conversational filler. Keep proper nouns, numbers, time-frames. Match the transcript's language. " +
+            'Output ONLY a JSON object {"queries": ["q1", "q2", ...]} — 1 to 3 entries, no markdown, no explanation.',
         },
-        { role: "user", content: `Transcript (last 1500 chars):\n${recent.slice(-1500)}` },
+        { role: "user", content: `Transcript (last 2000 chars):\n${recent.slice(-2000)}` },
       ],
     });
-    const q = completion.choices[0]?.message?.content?.trim() || "";
-    if (q) return q.replace(/^["']|["']$/g, "").slice(0, 200);
+    const raw = completion.choices[0]?.message?.content?.trim() || "";
+    if (!raw) return heuristic();
+    try {
+      const parsed = JSON.parse(raw.replace(/^```(?:json)?/i, "").replace(/```$/, "").trim()) as { queries?: unknown };
+      if (Array.isArray(parsed.queries)) {
+        const cleaned = parsed.queries
+          .filter((q): q is string => typeof q === "string" && q.trim().length > 0)
+          .map((q) => q.trim().replace(/^["']|["']$/g, "").slice(0, 200))
+          .slice(0, 3);
+        if (cleaned.length) return cleaned;
+      }
+    } catch {
+      // fall through
+    }
   } catch (err) {
     logger.warn({ err }, "[RESEARCH] LLM query derivation failed; using heuristic");
   }
@@ -154,61 +164,74 @@ router.post("/research", async (req, res): Promise<void> => {
     }
   }
 
-  // Derive query if not provided
-  const query = (typeof rawQuery === "string" && rawQuery.trim())
-    ? rawQuery.trim().slice(0, 200)
-    : await deriveQuery(Number(sessionId));
+  // Manual query → single search. No query → derive 1-3 queries that cover
+  // every distinct fact-question / strategic angle in the recent transcript.
+  const queries: string[] = (typeof rawQuery === "string" && rawQuery.trim())
+    ? [rawQuery.trim().slice(0, 200)]
+    : await deriveQueries(Number(sessionId));
 
-  // Log security event (query length only, no transcript content)
   req.log.info({
     security_event: "research_query",
     trigger,
     sessionId: Number(sessionId),
-    queryLength: query.length,
+    queryCount: queries.length,
     userId: user.id,
   });
 
-  let answer: string;
-  let sources: { title: string; url: string; snippet: string }[];
+  // Fire all queries in parallel — Tavily handles low single-digit
+  // concurrency fine and the user gets answers in ~the time of one call.
+  const results = await Promise.allSettled(queries.map((q) => research(q)));
 
-  try {
-    const result = await research(query);
-    answer = result.answer;
-    sources = result.sources;
-  } catch (err) {
-    req.log.error({ err }, "Research provider error");
+  const persisted: typeof researchResultsTable.$inferSelect[] = [];
+  for (let i = 0; i < queries.length; i++) {
+    const r = results[i];
+    if (r.status !== "fulfilled") {
+      req.log.error({ err: r.reason, query: queries[i] }, "Research provider error");
+      continue;
+    }
+    const [row] = await db.insert(researchResultsTable).values({
+      sessionId: Number(sessionId),
+      userId: user.id,
+      query: queries[i],
+      answer: r.value.answer,
+      sources: r.value.sources as unknown as Record<string, unknown>[],
+      trigger,
+      status: "ok",
+    }).returning();
+    persisted.push(row);
+  }
+
+  if (persisted.length === 0) {
     res.status(502).json({ error: "Research provider failed. Please try again." });
     return;
   }
 
-  // Persist
-  const [row] = await db.insert(researchResultsTable).values({
-    sessionId: Number(sessionId),
-    userId: user.id,
-    query,
-    answer,
-    sources: sources as unknown as Record<string, unknown>[],
-    trigger,
-    status: "ok",
-  }).returning();
-
-  // Increment usage (best-effort)
+  // Increment usage once per successful search (best-effort).
   if (!user.isAdmin && user.plan !== "admin") {
     const usage = await getOrCreateUsage(user.id, user.plan);
     await db.update(usageTable)
-      .set({ researchRequestsUsed: sql`COALESCE(research_requests_used, 0) + 1` })
+      .set({ researchRequestsUsed: sql`COALESCE(research_requests_used, 0) + ${persisted.length}` })
       .where(eq(usageTable.id, usage.id))
       .catch((err: unknown) => req.log.error({ err }, "Failed to increment research usage"));
   }
 
+  // Back-compat: return the FIRST persisted result at the top level (the
+  // frontend's older code path that does `setResults((prev) => [r, ...prev])`
+  // still works). Also expose the full array as `results` so the panel can
+  // fan all of them in at once.
+  const shape = (r: typeof researchResultsTable.$inferSelect) => ({
+    id: r.id,
+    sessionId: r.sessionId,
+    query: r.query,
+    answer: r.answer,
+    sources: r.sources,
+    trigger: r.trigger,
+    createdAt: r.createdAt,
+  });
+
   res.status(201).json({
-    id: row.id,
-    sessionId: row.sessionId,
-    query: row.query,
-    answer: row.answer,
-    sources: row.sources,
-    trigger: row.trigger,
-    createdAt: row.createdAt,
+    ...shape(persisted[0]),
+    results: persisted.map(shape),
   });
 });
 
