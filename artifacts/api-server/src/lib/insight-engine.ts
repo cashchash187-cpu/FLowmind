@@ -26,10 +26,19 @@ async function withRetry<T>(label: string, fn: () => Promise<T>, attempts = 3): 
 
 export type InsightCategory = "opportunity" | "risk" | "connection" | "question";
 
+/** Why the engine wants to speak — controls how the ticker rate-limits it. */
+export type InsightTrigger =
+  | "reactive"   // direct question just asked — fast, 2 per question max
+  | "strategic"  // proactive pattern from the older context — rare, ≥30 s apart
+  | "factgap"    // a number/name/regulation needs lookup before speaking
+  | "followup";  // second half of a compound question, anchored to a prior tip
+
 /** Outcome of the first pass: decide if we should speak and whether we need facts. */
 export interface InsightDecision {
   /** If false: stay silent this tick. */
   shouldFire: boolean;
+  /** Which trigger fired — the ticker uses this to pick the right rate cap. */
+  triggerType: InsightTrigger;
   /** If true, caller should call the research API with researchQuery and then synthesizeInsight(). */
   needsResearch: boolean;
   researchQuery: string | null;
@@ -117,7 +126,14 @@ Example 4
 Recent: "Also was sollten die machen?"
 GOOD: shouldFire=false (you already covered the bundling angle; advance the angle or stay silent).
 
-Example 5 — FOLLOW-UP
+Example 5 — STRATEGIC (proactive, no direct question)
+Earlier summary mentions: "Klient erwähnte mehrfach Preis-Sensitivität (3x in den ersten 8 Min). Sagte 'Budget knapp', 'können wir das günstiger?' und 'wenn das zu teuer wird, springen wir ab'. Aktuell besprechen wir Implementierungs-Timeline."
+Recent: "Also wir würden gerne in Q2 starten und dann sukzessive ausrollen."
+"Already said" contains nothing about pricing.
+GOOD: shouldFire=true, triggerType="strategic", category="risk", needsResearch=false,
+tip="Sie haben Preis dreimal als Knockout-Kriterium erwähnt. Bevor Q2 fix wird, würde ich einen Phase-1-Festpreis mit klaren Ausstiegspunkten vorschlagen — sonst riskieren Sie, dass das ROI-Thema später das ganze Projekt killt."
+
+Example 6 — FOLLOW-UP
 Recent: "Wie sehen die Zahlen der Deutschen Leasing aus, und an was muss die DL arbeiten, um der Konkurrenz nahezukommen?"
 "Already said" contains: "Die Deutsche Leasing verzeichnete 2024 ein Wachstum von 2,6% im Maschinen- und Fahrzeugleasing, während der Gesamtmarkt um 4,5% zulegte."
 GOOD tip: "Anschließend an die genannten Zahlen — drei Hebel für die DL: 1) Vertriebs-Effizienz hochziehen (CRM-getriebenes Account-Management statt Filial-Vertrieb), 2) digitale End-to-End-Antragsstrecke unter 10 Min, 3) Fokus auf wachstumsstarke EV-Flotten als neues Premium-Segment."
@@ -127,6 +143,7 @@ shouldFire=true, needsResearch=false, category="opportunity"
 Output ONLY this JSON (no markdown, no code fences):
 {
   "shouldFire": boolean,
+  "triggerType": "reactive" | "strategic" | "factgap" | "followup",  // which case (A/B/C/D) you matched
   "needsResearch": boolean,
   "researchQuery": string | null,
   "tip": string | null,
@@ -232,7 +249,14 @@ export async function decideInsight(
   }
 
   const shouldFire = parsed.shouldFire === true;
-  if (!shouldFire) return { shouldFire: false, needsResearch: false, researchQuery: null, tip: null, category: "question" };
+  if (!shouldFire) return { shouldFire: false, triggerType: "reactive", needsResearch: false, researchQuery: null, tip: null, category: "question" };
+
+  // Trust the LLM's self-classification, fall back to "reactive" when the
+  // current text has a question and "strategic" otherwise.
+  const validTriggers: InsightTrigger[] = ["reactive", "strategic", "factgap", "followup"];
+  const triggerType: InsightTrigger = validTriggers.includes(parsed.triggerType as InsightTrigger)
+    ? (parsed.triggerType as InsightTrigger)
+    : ctx.reactive ? "reactive" : "strategic";
 
   const category: InsightCategory = VALID_CATEGORIES.includes(parsed.category as InsightCategory)
     ? (parsed.category as InsightCategory)
@@ -263,18 +287,19 @@ export async function decideInsight(
     });
     if (similar) {
       logger.info({ tip: tip.slice(0, 80) }, "[INSIGHT-ENGINE] dropped near-duplicate tip");
-      return { shouldFire: false, needsResearch: false, researchQuery: null, tip: null, category: "question" };
+      return { shouldFire: false, triggerType, needsResearch: false, researchQuery: null, tip: null, category: "question" };
     }
   }
 
   // Filter out tip patterns that mansplain the question instead of answering.
   if (tip && tipIsMetaCommentary(tip)) {
     logger.info({}, "[INSIGHT-ENGINE] dropped meta-commentary tip");
-    return { shouldFire: false, needsResearch: false, researchQuery: null, tip: null, category: "question" };
+    return { shouldFire: false, triggerType, needsResearch: false, researchQuery: null, tip: null, category: "question" };
   }
 
   return {
     shouldFire: needsResearch ? !!researchQuery : !!tip,
+    triggerType: needsResearch ? "factgap" : triggerType,
     needsResearch: needsResearch && !!researchQuery,
     researchQuery: needsResearch ? researchQuery : null,
     tip,

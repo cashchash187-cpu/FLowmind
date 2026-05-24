@@ -29,17 +29,26 @@ interface TickerEntry {
   lastInsightAt: number;
   charCountAtLastInsight: number;
   lastResearchAt: number;
-  /** How many insights have fired since the last meaningful new speech.
-      Reset to 0 every time `MEANINGFUL_NEW_CHARS` of fresh text arrives.
-      Capped at MAX_INSIGHTS_PER_BURST so a single user question can't
+  /** Reactive-track burst counter: how many REACTIVE / FOLLOWUP / FACTGAP
+      insights have fired since the last meaningful new speech. Reset
+      to 0 every MEANINGFUL_NEW_CHARS. Capped so one question doesn't
       generate dozens of paraphrased tips. */
-  burstCount: number;
-  /** Char count at the time `burstCount` was last reset. */
+  reactiveBurstCount: number;
+  /** Char count at the time `reactiveBurstCount` was last reset. */
   burstResetCharCount: number;
+  /** When the last STRATEGIC insight fired. Strategic insights have a
+      separate, much slower cadence (≥STRATEGIC_MIN_GAP_MS) so they can
+      surface from the overall context even while the reactive track is
+      exhausted on the current question. */
+  lastStrategicAt: number;
 }
 
-const MAX_INSIGHTS_PER_BURST = 2;
+const MAX_REACTIVE_PER_BURST = 2;
 const MEANINGFUL_NEW_CHARS = 80;
+/** Minimum gap between two strategic (proactive) insights — keeps them rare
+    and high-signal, like a colleague who only speaks up when noticing
+    something genuine across the meeting arc. */
+const STRATEGIC_MIN_GAP_MS = 30_000;
 
 const tickers = new Map<number, TickerEntry>();
 const MAX_TICKERS = 500;
@@ -72,8 +81,9 @@ export function startInsightTicker(userId: number, sessionId: number) {
     lastInsightAt: 0,
     charCountAtLastInsight: 0,
     lastResearchAt: 0,
-    burstCount: 0,
+    reactiveBurstCount: 0,
     burstResetCharCount: 0,
+    lastStrategicAt: 0,
   };
 
   const interval = setInterval(async () => {
@@ -106,8 +116,9 @@ export function startInsightTicker(userId: number, sessionId: number) {
         tickEntry.lastInsightAt = 0;
         tickEntry.charCountAtLastInsight = 0;
         tickEntry.lastResearchAt = 0;
-        tickEntry.burstCount = 0;
+        tickEntry.reactiveBurstCount = 0;
         tickEntry.burstResetCharCount = 0;
+        tickEntry.lastStrategicAt = 0;
       }
 
       // 2. Gate: recent heartbeat (session considered idle if hb too old).
@@ -139,38 +150,42 @@ export function startInsightTicker(userId: number, sessionId: number) {
       const recentTail = fullText.slice(-1500);
       const reactive = looksLikeQuestion(newSpeech) || looksLikeQuestion(recentTail);
 
-      // Reset the burst counter when ENOUGH new speech has arrived since the
-      // last reset. Without this a single lingering question would let the
-      // engine fire forever — 15 insights for one short question was the
-      // real-world failure mode.
+      // Reset the reactive burst counter when ENOUGH new speech has arrived
+      // since the last reset (means the user has moved past the previous
+      // question, the engine gets a fresh budget on the new content).
       const newCharsSinceBurstReset = currentCharCount - tickEntry.burstResetCharCount;
       if (newCharsSinceBurstReset >= MEANINGFUL_NEW_CHARS) {
-        tickEntry.burstCount = 0;
+        tickEntry.reactiveBurstCount = 0;
         tickEntry.burstResetCharCount = currentCharCount;
       }
 
-      // 4a. Hard burst cap: after MAX_INSIGHTS_PER_BURST insights on the
-      //     same speech without meaningful new content, shut up. Even if the
-      //     LLM is enthusiastic, the user gets a quiet feed instead of spam.
-      if (tickEntry.burstCount >= MAX_INSIGHTS_PER_BURST) {
-        logger.debug({ userId, sessionId: session.id, burstCount: tickEntry.burstCount, newCharsSinceBurstReset }, "[INSIGHT-TICKER] burst-cap hold");
-        return;
-      }
-
-      // 4b. Time + char gates. Reactive insights get a shorter cooldown.
+      // 4. Reactive-track quick caps — only block if no new speech AND we've
+      //    already fired the burst. Strategic emergence is allowed through
+      //    these gates because it has its own slower cap below.
+      const reactiveTrackBlocked = tickEntry.reactiveBurstCount >= MAX_REACTIVE_PER_BURST;
       const minSecondsGate = reactive ? REACTIVE_MIN_SECONDS_SINCE_LAST : MIN_SECONDS_SINCE_LAST;
       const secondsSinceLast = tickEntry.lastInsightAt > 0 ? (now - tickEntry.lastInsightAt) / 1000 : Infinity;
-      if (tickEntry.lastInsightAt > 0 && now - tickEntry.lastInsightAt < minSecondsGate * 1000) {
-        logger.debug({ userId, sessionId: session.id, secondsSinceLast, gate: minSecondsGate, reactive }, "[INSIGHT-TICKER] time-gate hold");
-        return;
-      }
-      const minCharsGate = reactive ? 0 : MIN_CHARS_SINCE_LAST;
+      const timeGateOpen = tickEntry.lastInsightAt === 0 || now - tickEntry.lastInsightAt >= minSecondsGate * 1000;
       const newChars = currentCharCount - tickEntry.charCountAtLastInsight;
-      if (newChars < minCharsGate) {
-        logger.debug({ userId, sessionId: session.id, newChars, gate: minCharsGate, reactive }, "[INSIGHT-TICKER] char-gate hold");
+      const minCharsGate = reactive ? 0 : MIN_CHARS_SINCE_LAST;
+      const charGateOpen = newChars >= minCharsGate;
+
+      const strategicAllowed = now - tickEntry.lastStrategicAt >= STRATEGIC_MIN_GAP_MS;
+
+      // If both tracks are blocked, there's nothing to do this tick.
+      if (reactiveTrackBlocked && !strategicAllowed) {
+        logger.debug({ userId, sessionId: session.id, reactiveBurstCount: tickEntry.reactiveBurstCount, sinceStrategic: Math.round((now - tickEntry.lastStrategicAt) / 1000) }, "[INSIGHT-TICKER] both tracks held");
         return;
       }
-      logger.info({ userId, sessionId: session.id, reactive, newChars, burstCount: tickEntry.burstCount, ageMin: ((now - (allRows[0]?.startMs ?? now)) / 60000).toFixed(1) }, "[INSIGHT-TICKER] decide()");
+      if (!timeGateOpen && !strategicAllowed) {
+        logger.debug({ userId, sessionId: session.id, secondsSinceLast, gate: minSecondsGate }, "[INSIGHT-TICKER] time-gate hold");
+        return;
+      }
+      if (!charGateOpen && !reactive && !strategicAllowed) {
+        logger.debug({ userId, sessionId: session.id, newChars, gate: minCharsGate }, "[INSIGHT-TICKER] char-gate hold");
+        return;
+      }
+      logger.info({ userId, sessionId: session.id, reactive, newChars, reactiveBurstCount: tickEntry.reactiveBurstCount, strategicAllowed, ageMin: ((now - (allRows[0]?.startMs ?? now)) / 60000).toFixed(1) }, "[INSIGHT-TICKER] decide()");
 
       // 5. Build the rich conversation context (rolling summary cache).
       const sessionStartedAtMs = session.createdAt
@@ -278,6 +293,25 @@ export function startInsightTicker(userId: number, sessionId: number) {
 
       if (!finalTip) return;
 
+      // 7b. Apply trigger-specific rate caps now that we know the type.
+      //     Strategic insights live on a slow track (1 per STRATEGIC_MIN_GAP_MS)
+      //     so they can pop up even when the reactive track is exhausted on
+      //     the current question. Reactive / factgap / followup share the
+      //     fast track with the burst cap.
+      const triggerType = decision.triggerType;
+      const isStrategic = triggerType === "strategic";
+      if (isStrategic) {
+        if (now - tickEntry.lastStrategicAt < STRATEGIC_MIN_GAP_MS) {
+          logger.info({ userId, sessionId: session.id, sinceLast: Math.round((now - tickEntry.lastStrategicAt) / 1000) }, "[INSIGHT-TICKER] strategic cooldown active, dropping");
+          return;
+        }
+      } else {
+        if (tickEntry.reactiveBurstCount >= MAX_REACTIVE_PER_BURST) {
+          logger.info({ userId, sessionId: session.id, reactiveBurstCount: tickEntry.reactiveBurstCount }, "[INSIGHT-TICKER] reactive burst cap reached, dropping");
+          return;
+        }
+      }
+
       // 8. Persist the (now fact-grounded) insight
       await db.insert(aiAssistsTable).values({
         sessionId: session.id,
@@ -287,7 +321,12 @@ export function startInsightTicker(userId: number, sessionId: number) {
         status: "new",
       });
       tickEntry.lastInsightAt = now;
-      tickEntry.burstCount += 1;
+      if (isStrategic) {
+        tickEntry.lastStrategicAt = now;
+      } else {
+        tickEntry.reactiveBurstCount += 1;
+      }
+      logger.info({ userId, sessionId: session.id, triggerType, category: finalCategory }, "[INSIGHT-TICKER] insight persisted");
     } catch (err) {
       logger.error({ err, userId }, "[INSIGHT-TICKER] Tick error");
     }
