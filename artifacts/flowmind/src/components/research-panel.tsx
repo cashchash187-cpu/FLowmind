@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from "react";
+import { useState, useRef, useCallback, useEffect } from "react";
 import { Search, X, Lock, ChevronUp, ChevronDown } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -97,6 +97,23 @@ export function ResearchPanel({
     if (debounceRef.current) clearTimeout(debounceRef.current);
     debounceRef.current = setTimeout(() => submitResearch(query), 200);
   };
+
+  // Auto-fire a transcript-derived search the very first time the panel
+  // opens for a session that has no results yet, so users don't have to
+  // hunt for the "Search from current transcript →" link.
+  const autoFiredRef = useRef(false);
+  useEffect(() => {
+    if (autoFiredRef.current) return;
+    if (!canResearch) return;
+    if (results.length > 0) return;
+    if (loadingId) return;
+    if (errorMsg) return;
+    autoFiredRef.current = true;
+    submitResearch();
+    // submitResearch is stable (useCallback). We intentionally fire only on
+    // mount + the gating booleans.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [canResearch]);
 
   const wrapperClass = inline
     ? "flex flex-col h-full"

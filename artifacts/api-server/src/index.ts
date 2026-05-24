@@ -52,8 +52,12 @@ await seedDatabase();
 
 const { startIdleTicker } = await import("./lib/idle-ticker");
 const { startRetentionLoop } = await import("./lib/retention");
+const { reviveActiveInsightTickers } = await import("./lib/insight-ticker");
 startIdleTicker();
 startRetentionLoop();
+// Restart insight engines that were live before the previous deploy died.
+// Fire-and-forget; never blocks server startup.
+reviveActiveInsightTickers().catch(() => {});
 
 // Create HTTP server so WebSocket can share the same port
 const server = http.createServer(app);

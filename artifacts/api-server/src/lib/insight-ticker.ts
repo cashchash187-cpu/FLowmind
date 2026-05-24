@@ -128,10 +128,18 @@ export function startInsightTicker(userId: number, sessionId: number) {
       // 4. Gates. Reactive insights (direct question still in the air) get
       //    a shorter cooldown and a smaller char threshold so they fire fast.
       const minSecondsGate = reactive ? REACTIVE_MIN_SECONDS_SINCE_LAST : MIN_SECONDS_SINCE_LAST;
-      if (tickEntry.lastInsightAt > 0 && now - tickEntry.lastInsightAt < minSecondsGate * 1000) return;
+      const secondsSinceLast = tickEntry.lastInsightAt > 0 ? (now - tickEntry.lastInsightAt) / 1000 : Infinity;
+      if (tickEntry.lastInsightAt > 0 && now - tickEntry.lastInsightAt < minSecondsGate * 1000) {
+        logger.debug({ userId, sessionId: session.id, secondsSinceLast, gate: minSecondsGate, reactive }, "[INSIGHT-TICKER] time-gate hold");
+        return;
+      }
       const minCharsGate = reactive ? 0 : MIN_CHARS_SINCE_LAST;
       const newChars = currentCharCount - tickEntry.charCountAtLastInsight;
-      if (newChars < minCharsGate) return;
+      if (newChars < minCharsGate) {
+        logger.debug({ userId, sessionId: session.id, newChars, gate: minCharsGate, reactive }, "[INSIGHT-TICKER] char-gate hold");
+        return;
+      }
+      logger.info({ userId, sessionId: session.id, reactive, newChars, ageMin: ((now - (allRows[0]?.startMs ?? now)) / 60000).toFixed(1) }, "[INSIGHT-TICKER] decide()");
 
       // 5. Build the rich conversation context (rolling summary cache).
       const sessionStartedAtMs = session.createdAt
@@ -165,7 +173,14 @@ export function startInsightTicker(userId: number, sessionId: number) {
       // Advance the char baseline even on silence so we wait for genuinely
       // new speech before re-querying the same context.
       tickEntry.charCountAtLastInsight = currentCharCount;
-      if (!decision || !decision.shouldFire) return;
+      if (!decision) {
+        logger.warn({ userId, sessionId: session.id }, "[INSIGHT-TICKER] decide() returned null");
+        return;
+      }
+      if (!decision.shouldFire) {
+        logger.info({ userId, sessionId: session.id, needsResearch: decision.needsResearch }, "[INSIGHT-TICKER] decide() said no");
+        return;
+      }
 
       // 7. Pass 2 — when facts are needed, run research first, then synthesize
       // the actual insight using the lookup results. The user must never see
@@ -255,5 +270,28 @@ export function clearInsightTicker(userId: number) {
   if (entry) {
     clearInterval(entry.interval);
     tickers.delete(userId);
+  }
+}
+
+/**
+ * Boot-warmer — restart tickers for every active insight session in the DB.
+ * Called once on server start. Without this, any deploy silently kills all
+ * running insight engines until each session is re-opened by its user.
+ */
+export async function reviveActiveInsightTickers() {
+  try {
+    const rows = await db
+      .select({ userId: sessionsTable.userId, id: sessionsTable.id })
+      .from(sessionsTable)
+      .where(and(eq(sessionsTable.status, "active"), eq(sessionsTable.mode, "insight")));
+    let started = 0;
+    for (const r of rows) {
+      if (r.userId == null) continue;
+      startInsightTicker(r.userId, r.id);
+      started++;
+    }
+    if (started) logger.info({ started }, "[INSIGHT-TICKER] revived active session tickers");
+  } catch (err) {
+    logger.error({ err }, "[INSIGHT-TICKER] revive on boot failed");
   }
 }

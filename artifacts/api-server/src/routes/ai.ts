@@ -303,6 +303,16 @@ router.get("/ai/insights", async (req, res): Promise<void> => {
   const session = await getOwnedSession(sessionId, req.user!.id, req.user!.isAdmin);
   if (!session) { res.status(404).json({ error: "Session not found" }); return; }
 
+  // Lazy-restart the insight ticker. startInsightTicker is registered when
+  // the session is CREATED, but a server restart (any deploy!) wipes the
+  // in-memory ticker map — so without this the page polls insights forever
+  // and the engine never runs. Calling it here is a no-op when the ticker
+  // already exists.
+  if (session.status === "active" && session.mode === "insight") {
+    const { startInsightTicker } = await import("../lib/insight-ticker");
+    startInsightTicker(session.userId ?? req.user!.id, session.id);
+  }
+
   const rows = await db
     .select()
     .from(aiAssistsTable)

@@ -1,9 +1,11 @@
 import { Router, type IRouter } from "express";
-import { eq, desc, and, sql } from "drizzle-orm";
+import { eq, desc, asc, and, sql } from "drizzle-orm";
 import { db, researchResultsTable, sessionsTable, transcriptsTable, usageTable } from "@workspace/db";
 import { isResearchAvailable, research } from "../lib/research-provider";
 import { getPlanLimits } from "../lib/plans";
 import { getOrCreateUsage } from "../lib/usage-helpers";
+import { openai, LLM_MODEL, llmConfigured } from "@workspace/integrations-openai-ai-server";
+import { logger } from "../lib/logger";
 
 const router: IRouter = Router();
 
@@ -15,27 +17,58 @@ async function getOwnedSession(sessionId: number, userId: number, isAdmin: boole
   return session;
 }
 
-/** Derive a concise query from the last ~600 chars of the transcript. */
+/**
+ * Pull a research-friendly query out of the recent transcript. The old
+ * implementation just grabbed the last sentence — so a transcript ending in
+ * "Und was können wir als Deutsche Leasing dagegen machen?" produced a
+ * literal Google search for that phrase, which returned bizarre customer-
+ * complaint pages instead of the actual data behind the conversation.
+ *
+ * Now: ask the LLM (one cheap call) to read the recent transcript and emit
+ * a concise, fact-seeking web query. Falls back to a heuristic on failure.
+ */
 async function deriveQuery(sessionId: number): Promise<string> {
   const rows = await db
     .select({ text: transcriptsTable.text })
     .from(transcriptsTable)
     .where(eq(transcriptsTable.sessionId, sessionId))
-    .orderBy(desc(transcriptsTable.startMs))
-    .limit(12);
+    .orderBy(asc(transcriptsTable.startMs));
 
-  const recent = rows
-    .map((r) => r.text)
-    .reverse()
-    .join(" ")
-    .slice(-600)
-    .trim();
-
+  const recent = rows.map((r) => r.text).join(" ").trim();
   if (!recent) return "Key topics from this meeting";
 
-  // Extract the last sentence-like fragment as the query (max 120 chars)
-  const sentences = recent.split(/[.!?]+/).filter(Boolean);
-  return (sentences[sentences.length - 1]?.trim() ?? recent).slice(0, 120);
+  // ── Heuristic fallback (also used if LLM is unavailable) ──────────────────
+  function heuristic(): string {
+    const tail = recent.slice(-600);
+    const sentences = tail.split(/[.!?]+/).filter(Boolean);
+    return (sentences[sentences.length - 1]?.trim() ?? tail).slice(0, 120);
+  }
+
+  if (!llmConfigured) return heuristic();
+
+  try {
+    const completion = await openai.chat.completions.create({
+      model: LLM_MODEL,
+      max_tokens: 200,
+      temperature: 0.2,
+      messages: [
+        {
+          role: "system",
+          content:
+            "You turn the recent transcript of a business meeting into ONE short web search query (max 12 words) that would surface the FACTS the speakers actually want — numbers, dates, definitions, company info. " +
+            "Drop conversational filler ('was können wir machen', 'wie sollten wir reagieren'). " +
+            "Keep proper nouns, numbers and the time-frame. Match the conversation's language. " +
+            "Output ONLY the raw query string, no quotes, no explanation.",
+        },
+        { role: "user", content: `Transcript (last 1500 chars):\n${recent.slice(-1500)}` },
+      ],
+    });
+    const q = completion.choices[0]?.message?.content?.trim() || "";
+    if (q) return q.replace(/^["']|["']$/g, "").slice(0, 200);
+  } catch (err) {
+    logger.warn({ err }, "[RESEARCH] LLM query derivation failed; using heuristic");
+  }
+  return heuristic();
 }
 
 router.get("/research", async (req, res): Promise<void> => {
