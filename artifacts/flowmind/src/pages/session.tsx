@@ -308,7 +308,23 @@ export default function SessionLive() {
   const heartbeatRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
   useEffect(() => {
-    scrollBottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    // Manually scroll the nearest scrollable ancestor instead of using
+    // element.scrollIntoView — the latter walks up ALL scroll ancestors,
+    // which on iOS Safari pulls the document itself down and hides the
+    // mobile top bar with the FlowMind logo each time a new transcript
+    // chunk arrives. We only want to scroll the transcript viewport.
+    const el = scrollBottomRef.current;
+    if (!el) return;
+    let parent: HTMLElement | null = el.parentElement;
+    while (parent) {
+      const style = window.getComputedStyle(parent);
+      const overflowY = style.overflowY;
+      if ((overflowY === "auto" || overflowY === "scroll") && parent.scrollHeight > parent.clientHeight) {
+        parent.scrollTo({ top: parent.scrollHeight, behavior: "smooth" });
+        return;
+      }
+      parent = parent.parentElement;
+    }
   }, [allTranscripts.length]);
 
   // Handle a finalised speech chunk.
@@ -986,23 +1002,29 @@ export default function SessionLive() {
           )}
         </div>
 
-        {/* Insight panel — ALWAYS visible in insight mode. Desktop: permanent
-            right-hand column. Mobile: docked bottom column, in-flow (NOT a
-            modal Sheet — the dark backdrop was covering the transcript and
-            confusing users on session start). The Sheet toggle button is
-            hidden on desktop too. */}
+        {/* Desktop insight side column — unchanged from before. */}
         {isInsightMode && (
-          <>
-            {/* Desktop side column */}
-            <div className="hidden md:flex flex-col w-80 lg:w-96 border-l border-border/40 bg-card/50 backdrop-blur overflow-y-auto p-4 shrink-0">
-              <InsightStream sessionId={sessionId} />
-            </div>
-            {/* Mobile insight dock — in-flow above the mobile bottom bar.
-                Shorter than before (30vh) to leave room for the bottom bar. */}
-            <div className="md:hidden flex-none h-[30vh] border-t border-border/40 bg-card/60 backdrop-blur overflow-y-auto p-3">
-              <InsightStream sessionId={sessionId} />
-            </div>
-          </>
+          <div className="hidden md:flex flex-col w-80 lg:w-96 border-l border-border/40 bg-card/50 backdrop-blur overflow-y-auto p-4 shrink-0">
+            <InsightStream sessionId={sessionId} />
+          </div>
+        )}
+
+        {/* ── Mobile dock — unified Insights / Research with a tab switch ──
+            One panel at a time (max ~30vh) so the transcript stays usable.
+            Shows when at least one of (insight mode, research panel open)
+            is active. */}
+        {(isInsightMode || researchPanelOpen) && (
+          <MobileDock
+            sessionId={sessionId}
+            showInsights={isInsightMode}
+            showResearch={researchPanelOpen}
+            researchAvailable={researchAvailable}
+            canResearch={canResearch}
+            researchUsed={researchUsed}
+            researchLimit={researchLimit}
+            researchResults={researchResults}
+            onCloseResearch={() => setResearchPanelOpen(false)}
+          />
         )}
 
         {/* ─── MOBILE bottom bar — in flex flow, sits below the insight dock so
@@ -1106,26 +1128,30 @@ export default function SessionLive() {
           </div>
         )}
 
-        {/* Research panel — copilot: Sheet slide-over; insight: right column */}
+        {/* Research panel — copilot mode: desktop Sheet slide-over.
+            Mobile users get the unified MobileDock above instead, which
+            avoids the dark Sheet backdrop on small screens. */}
         {researchPanelOpen && !isInsightMode && (
-          <Sheet open={researchPanelOpen} onOpenChange={setResearchPanelOpen}>
-            <SheetContent
-              side="right"
-              className="w-[360px] sm:w-[420px] p-0 border-l border-primary/20 bg-card/95 backdrop-blur-xl"
-            >
-              <SheetTitle className="sr-only">Research Panel</SheetTitle>
-              <ResearchPanel
-                sessionId={sessionId}
-                canResearch={canResearch}
-                researchAvailable={researchAvailable}
-                researchUsed={researchUsed}
-                researchLimit={researchLimit}
-                mode="copilot"
-                initialResults={researchResults}
-                onClose={() => setResearchPanelOpen(false)}
-              />
-            </SheetContent>
-          </Sheet>
+          <div className="hidden md:contents">
+            <Sheet open={researchPanelOpen} onOpenChange={setResearchPanelOpen}>
+              <SheetContent
+                side="right"
+                className="w-[360px] sm:w-[420px] p-0 border-l border-primary/20 bg-card/95 backdrop-blur-xl"
+              >
+                <SheetTitle className="sr-only">Research Panel</SheetTitle>
+                <ResearchPanel
+                  sessionId={sessionId}
+                  canResearch={canResearch}
+                  researchAvailable={researchAvailable}
+                  researchUsed={researchUsed}
+                  researchLimit={researchLimit}
+                  mode="copilot"
+                  initialResults={researchResults}
+                  onClose={() => setResearchPanelOpen(false)}
+                />
+              </SheetContent>
+            </Sheet>
+          </div>
         )}
 
         {researchPanelOpen && isInsightMode && (
@@ -1392,5 +1418,111 @@ export default function SessionLive() {
       </Sheet>
     </div>
     </TooltipProvider>
+  );
+}
+
+// ─── Mobile dock ────────────────────────────────────────────────────────────
+// Tabbed bottom panel that hosts Insights and Research on phone screens.
+// Only one is visible at a time (max ~30 vh) so the transcript stays usable.
+// When both are active (insight mode + research panel open) a tab bar lets
+// the user flip without losing state.
+interface MobileDockProps {
+  sessionId: number;
+  showInsights: boolean;
+  showResearch: boolean;
+  researchAvailable: boolean;
+  canResearch: boolean;
+  researchUsed: number;
+  researchLimit: number;
+  researchResults: ResearchResultData[];
+  onCloseResearch: () => void;
+}
+
+function MobileDock({
+  sessionId,
+  showInsights,
+  showResearch,
+  researchAvailable,
+  canResearch,
+  researchUsed,
+  researchLimit,
+  researchResults,
+  onCloseResearch,
+}: MobileDockProps) {
+  // Default to whichever was opened most recently — research wins when the
+  // user just toggled it on, insights are the steady-state for insight mode.
+  const [activeTab, setActiveTab] = useState<"insights" | "research">(
+    showResearch ? "research" : "insights",
+  );
+  useEffect(() => {
+    if (showResearch && !showInsights) setActiveTab("research");
+    if (showInsights && !showResearch) setActiveTab("insights");
+    if (showResearch) setActiveTab("research"); // research just opened → switch
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showResearch]);
+
+  const showTabs = showInsights && showResearch;
+  const current: "insights" | "research" = showTabs ? activeTab : (showInsights ? "insights" : "research");
+
+  return (
+    <div className="md:hidden flex-none h-[32vh] border-t border-border/40 bg-card/60 backdrop-blur flex flex-col">
+      {/* Tab strip — only when BOTH panels are active. Otherwise the header
+          just shows the current panel name + close. */}
+      <div className="flex items-center justify-between px-2 py-1.5 border-b border-border/40">
+        {showTabs ? (
+          <div className="flex items-center gap-1">
+            <button
+              type="button"
+              onClick={() => setActiveTab("insights")}
+              className={`px-3 py-1 rounded-lg text-[11px] font-mono uppercase tracking-wider font-semibold ${
+                current === "insights" ? "bg-primary/15 text-primary" : "text-muted-foreground hover:bg-muted/40"
+              }`}
+            >
+              Insights
+            </button>
+            <button
+              type="button"
+              onClick={() => setActiveTab("research")}
+              className={`px-3 py-1 rounded-lg text-[11px] font-mono uppercase tracking-wider font-semibold ${
+                current === "research" ? "bg-amber-500/15 text-amber-600" : "text-muted-foreground hover:bg-muted/40"
+              }`}
+            >
+              Research
+            </button>
+          </div>
+        ) : (
+          <span className="px-2 text-[10px] font-mono uppercase tracking-widest text-muted-foreground font-semibold">
+            {current === "insights" ? "Live Insights" : "Research"}
+          </span>
+        )}
+        {showResearch && (
+          <button
+            type="button"
+            onClick={onCloseResearch}
+            className="px-2 py-1 text-[10px] font-mono uppercase tracking-wider text-muted-foreground hover:text-foreground"
+          >
+            close
+          </button>
+        )}
+      </div>
+
+      {/* Body */}
+      <div className="flex-1 overflow-y-auto p-3">
+        {current === "insights" ? (
+          <InsightStream sessionId={sessionId} />
+        ) : (
+          <ResearchPanel
+            sessionId={sessionId}
+            canResearch={canResearch}
+            researchAvailable={researchAvailable}
+            researchUsed={researchUsed}
+            researchLimit={researchLimit}
+            mode="copilot"
+            initialResults={researchResults}
+            inline
+          />
+        )}
+      </div>
+    </div>
   );
 }
