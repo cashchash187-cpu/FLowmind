@@ -54,45 +54,76 @@ const VALID_CATEGORIES: InsightCategory[] = ["opportunity", "risk", "connection"
 
 // ─── Pass 1: decide ─────────────────────────────────────────────────────────
 
-const DECIDE_PROMPT = `You are an experienced strategic advisor who has been QUIETLY SITTING IN this live business meeting from the start. You hear everything. You speak up only when you genuinely add value — like a sharp colleague who knows when to whisper and when to stay silent.
+const DECIDE_PROMPT = `You are an experienced strategic advisor sitting in this live business meeting. You speak only when you have a SPECIFIC, ACTIONABLE thing to say. Vague coaching is worse than silence.
 
 You will receive:
-1. How long the meeting has been going (in minutes).
-2. A bullet-point summary of EVERYTHING said earlier in this meeting (themes, decisions, open questions, recurring concerns). Treat this as ground truth — you DO remember it.
+1. Meeting age (minutes).
+2. A bullet-point summary of everything said earlier in this meeting.
 3. The most recent verbatim transcript fragment.
-4. The list of insights you have ALREADY given in this conversation (one-line summaries — never repeat them).
-5. A flag whether the latest fragment contains a DIRECT QUESTION you should react to.
+4. "Already said" — the insights you've ALREADY given. Treat these as banned.
+5. Whether the latest fragment contains a DIRECT QUESTION.
 
-Decide whether to speak up RIGHT NOW.
+THREE trigger cases:
 
-THREE distinct trigger cases:
+A) REACTIVE — A direct question was just asked.
+   • Your tip MUST be the actual answer or a concrete recommendation. Not "we should think about X". Not "this is a good question". Not "let's consider Y".
+   • If the question is "What should X do?" → list 2-3 SPECIFIC moves (e.g. "Bundling Software-Leasing mit Beratungspaketen", "Fokussierung auf Mittelstand-EV-Flotten", "Strategische Allianz mit Fintech-Plattformen").
+   • If the question is "What would you suggest?" → make a specific recommendation with a 1-sentence rationale.
+   • If you genuinely don't have a sharp answer → set shouldFire=false. Saying nothing is better than punting.
 
-A) REACTIVE — Someone just asked a direct question. ALWAYS speak up unless the same question was answered by you very recently in "Already said". If the question wants concrete data → needsResearch=true. If it wants opinion / advice → write the tip directly. Be fast and on-point.
+B) STRATEGIC — A pattern across the meeting (from the older summary + recent) that someone who heard everything would catch:
+   • A missed opportunity ("They mentioned a 50M budget — push the enterprise plan").
+   • A contradiction with something said earlier.
+   • A pattern of objections that suggests a deeper concern.
+   • Must reference WHAT in the earlier context you're connecting to.
 
-B) STRATEGIC — Reading across the whole meeting (older summary + recent), you spot something the listener should know NOW: a pattern (e.g. "they've raised price concerns 3 times — push ROI angle"), a missed opportunity, a contradiction with something said 15 minutes ago, an unstated assumption that risks the deal. These insights LEVERAGE the older context — they're things only someone who heard the whole meeting could spot.
+C) FACT GAP — A specific company / number / regulation / person came up. Set needsResearch=true with a targeted researchQuery. The synthesizer will write the tip after the lookup.
 
-C) FACT GAP — A specific company / regulation / number / person was just mentioned that the listener probably can't recall on the fly. Set needsResearch=true with a targeted researchQuery.
+═══ FORBIDDEN PATTERNS (return shouldFire=false instead) ═══
+✗ Restating or rephrasing the question.
+✗ "Wir sollten überlegen / nachdenken über…" / "Es wäre gut zu prüfen…".
+✗ "Konkrete Vorschläge wären hier hilfreich" — YOU give the concrete suggestions, don't ask for them.
+✗ Meta-commentary ("Das ist ein wichtiger Punkt", "Eine spannende Frage").
+✗ "Differenzierung stärken" / "Wettbewerbsfähigkeit verbessern" — that's a category, not an idea.
+✗ ANY paraphrase of an entry in "Already said".
 
-WHEN TO STAY SILENT (shouldFire=false):
-- Pleasantries, basic introductions, idle chatter.
-- A point you have ALREADY made (check "Already said" carefully — even a paraphrase counts as a repeat).
-- Generic coaching ("listen actively", "build rapport") — that's noise.
-- You're not confident you'd add value.
+═══ FEW-SHOT EXAMPLES ═══
 
+Example 1
+Recent: "Was könnten die Deutsche Leasing aktiv ändern, um wettbewerbsfähig zu bleiben?"
+BAD tip: "Wir sollten überlegen, wie wir uns differenzieren können."
+GOOD tip: "Drei konkrete Hebel: 1) End-to-End-Digitalisierung der Antragsstrecke (Online-Abschluss in <10 Min), 2) Subscription-Modelle statt klassischem Leasing für Software/IT, 3) ESG-Leasing für Elektroflotten als Premium-Segment positionieren."
+
+Example 2
+Recent: "Und was wäre dein Vorschlag?"
+Earlier summary mentions: "DL-Neugeschäft 2024 bei 10,3 Mrd. €, Konkurrenz mit Deutsche Bank-Strategie."
+BAD tip: "Konkrete Vorschläge zur Neupositionierung wären jetzt hilfreich."
+GOOD tip: "Mein Vorschlag: Mittelstand als Kernsegment doppelt absichern — ein dediziertes EV-Leasing-Programm plus eine Software-Leasing-Sparte (z.B. SaaS-Lizenzen on demand). Das spielt eure Größe gegen die Deutsche-Bank-Strategie aus."
+
+Example 3
+Recent: "Welche Zahlen hat die Deutsche Leasing 2024 geliefert?"
+GOOD: shouldFire=true, needsResearch=true, researchQuery="Deutsche Leasing 2024 Geschäftszahlen Neugeschäft", tip=null.
+
+Example 4
+"Already said" contains: "Bundling von Hardware + Software-Leasing als Differenzierung."
+Recent: "Also was sollten die machen?"
+GOOD: shouldFire=false (you already covered the bundling angle; advance the angle or stay silent).
+
+═══ OUTPUT ═══
 Output ONLY this JSON (no markdown, no code fences):
 {
   "shouldFire": boolean,
   "needsResearch": boolean,
-  "researchQuery": string | null,   // targeted web query (max 12 words) when needsResearch
-  "tip": string | null,             // REQUIRED when needsResearch=false AND shouldFire=true
+  "researchQuery": string | null,
+  "tip": string | null,
   "category": "opportunity" | "risk" | "connection" | "question"
 }
 
 Hard rules:
-- Tip is 1-3 complete sentences, max ~60 words, specific and concrete, in the conversation's exact language (German → German, English → English, etc.).
-- When a tip leverages older context, briefly anchor it ("Earlier they mentioned X — now would be the moment to …").
-- Never invent factual data; lookup instead.
-- NEVER repeat a point that's already in "Already said". When a topic comes up again, advance the angle or stay silent.`;
+- Match the conversation's exact language (German → German, English → English).
+- Tip is 1-3 complete sentences, max ~70 words.
+- Never invent factual data; if you need numbers, set needsResearch=true.
+- If your tip would paraphrase an "Already said" entry: shouldFire=false. Saying nothing > repeating yourself.`;
 
 export interface DecideContext {
   /** Minutes since the meeting began. */
@@ -154,8 +185,14 @@ export async function decideInsight(
     const completion = await withRetry("decide", () =>
       openai.chat.completions.create({
         model: LLM_MODEL,
-        max_tokens: 800,
-        temperature: 0.3,
+        // Higher token budget — the prompt has few-shot examples that eat
+        // input budget; we want room for a confident 60-70 word answer plus
+        // Gemini's reasoning tokens.
+        max_tokens: 1200,
+        // Higher temperature pushes the model to take a stance instead of
+        // hedging with "we should consider…". The post-filter catches
+        // hallucinations, so we can afford the boldness.
+        temperature: 0.55,
         response_format: { type: "json_object" },
         messages: [
           { role: "system", content: DECIDE_PROMPT },
@@ -200,6 +237,24 @@ export async function decideInsight(
       ? parsed.tip.trim()
       : null;
 
+  // Server-side dedup safety net. Even with a strong "don't repeat" prompt
+  // the LLM still occasionally restates a previous tip in slightly different
+  // words. We compare token overlap (Jaccard on word sets, language-agnostic)
+  // and drop if it's too similar to any previous insight.
+  if (tip && ctx.previousInsights.length) {
+    const similar = ctx.previousInsights.some((prev) => jaccardSimilarity(tip, prev) >= 0.55);
+    if (similar) {
+      logger.info({}, "[INSIGHT-ENGINE] dropped near-duplicate tip");
+      return { shouldFire: false, needsResearch: false, researchQuery: null, tip: null, category: "question" };
+    }
+  }
+
+  // Filter out tip patterns that mansplain the question instead of answering.
+  if (tip && tipIsMetaCommentary(tip)) {
+    logger.info({}, "[INSIGHT-ENGINE] dropped meta-commentary tip");
+    return { shouldFire: false, needsResearch: false, researchQuery: null, tip: null, category: "question" };
+  }
+
   return {
     shouldFire: needsResearch ? !!researchQuery : !!tip,
     needsResearch: needsResearch && !!researchQuery,
@@ -207,6 +262,43 @@ export async function decideInsight(
     tip,
     category,
   };
+}
+
+// ─── Quality filters ────────────────────────────────────────────────────────
+
+/** Jaccard similarity on lowercased word sets. Tokens shorter than 3 chars
+ *  are discarded to ignore noise like "der/die/das/zu". */
+function jaccardSimilarity(a: string, b: string): number {
+  const tok = (s: string) =>
+    new Set(
+      s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter((w) => w.length >= 3),
+    );
+  const A = tok(a);
+  const B = tok(b);
+  if (A.size === 0 || B.size === 0) return 0;
+  let inter = 0;
+  for (const w of A) if (B.has(w)) inter++;
+  const union = A.size + B.size - inter;
+  return union === 0 ? 0 : inter / union;
+}
+
+/** Catch the most common "mansplain the question" patterns. The LLM gets one
+ *  more chance on the next tick to produce something actionable. */
+function tipIsMetaCommentary(tip: string): boolean {
+  const t = tip.toLowerCase();
+  const patterns = [
+    /wir sollten (?:überlegen|nachdenken|prüfen|diskutieren)/i,
+    /es wäre (?:gut|sinnvoll|wichtig)/i,
+    /wäre(?:n)? (?:hier|jetzt)? hilfreich/i,
+    /das ist ein wichtiger punkt/i,
+    /eine (?:gute|spannende|interessante) frage/i,
+    /(?:könnten|sollten) wir uns? gedanken machen/i,
+    /lass uns überlegen/i,
+    /we should (?:think about|consider|reflect)/i,
+    /that('s| is) a (?:good|great|interesting) (?:question|point)/i,
+    /would be (?:helpful|useful) to/i,
+  ];
+  return patterns.some((p) => p.test(t));
 }
 
 // ─── Pass 2: synthesize using research ──────────────────────────────────────
