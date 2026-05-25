@@ -6,6 +6,7 @@ import { getPlanLimits } from "../lib/plans";
 import { getOrCreateUsage } from "../lib/usage-helpers";
 import { openai, LLM_MODEL, llmConfigured } from "@workspace/integrations-openai-ai-server";
 import { logger } from "../lib/logger";
+import { ensureSessionBrief, formatBriefForPrompt } from "../lib/meeting-brief";
 
 const router: IRouter = Router();
 
@@ -44,6 +45,14 @@ async function deriveQueries(sessionId: number): Promise<string[]> {
 
   if (!llmConfigured) return heuristic();
 
+  // Wave 17: feed the auto-derived session brief so query extraction has
+  // real situational context — e.g. "Marcel sells leasing at DL" lets the
+  // LLM pick competitor / market queries, not generic restatements of the
+  // counterpart's question. Best-effort; if the brief isn't ready yet we
+  // fall back to the transcript-only extraction.
+  const brief = await ensureSessionBrief(sessionId, recent);
+  const briefBlock = formatBriefForPrompt(brief);
+
   try {
     const completion = await openai.chat.completions.create({
       model: LLM_MODEL,
@@ -56,9 +65,15 @@ async function deriveQueries(sessionId: number): Promise<string[]> {
           content:
             "You read a meeting transcript and extract UP TO 3 short web search queries (max 12 words each) that would surface the FACTS the speakers actually want — numbers, dates, definitions, company info, competitive landscape. " +
             "Cover EVERY distinct fact-question or strategic angle in the transcript. Compound questions get separate queries. Drop conversational filler. Keep proper nouns, numbers, time-frames. Match the transcript's language. " +
+            "When a meeting brief is provided, formulate the queries from the ASSISTED USER's perspective (e.g. if they sell X at company Y, ask about competitors / pricing / customers in X — not about Y itself, which they already know). " +
             'Output ONLY a JSON object {"queries": ["q1", "q2", ...]} — 1 to 3 entries, no markdown, no explanation.',
         },
-        { role: "user", content: `Transcript (last 2000 chars):\n${recent.slice(-2000)}` },
+        {
+          role: "user",
+          content:
+            (briefBlock ? `Meeting context (auto-derived):\n${briefBlock}\n\n` : "") +
+            `Transcript (last 2000 chars):\n${recent.slice(-2000)}`,
+        },
       ],
     });
     const raw = completion.choices[0]?.message?.content?.trim() || "";

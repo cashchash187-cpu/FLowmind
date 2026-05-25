@@ -1,11 +1,13 @@
 import { db } from "@workspace/db";
 import { sessionsTable, transcriptsTable, aiAssistsTable, usersTable, researchResultsTable } from "@workspace/db";
 import { eq, and, desc, asc } from "drizzle-orm";
-import { decideInsight, synthesizeInsight, fallbackTipFromResearch } from "./insight-engine";
+import { decideInsight, synthesizeInsight, fallbackTipFromResearch, type TranscriptTurn } from "./insight-engine";
 import { buildConversationContext, looksLikeQuestion } from "./conversation-context";
 import { isResearchAvailable, research } from "./research-provider";
 import { getPlanLimits } from "./plans";
 import { logger } from "./logger";
+import { ensureSessionBrief } from "./meeting-brief";
+import { ensureUserProfile } from "./user-profile";
 
 // The ticker checks frequently. The decide() call is cheap (one LLM message);
 // expensive work (research, synth) only fires when decide() says shouldFire.
@@ -131,8 +133,13 @@ export function startInsightTicker(userId: number, sessionId: number) {
 
       // 3. Pull the full transcript (chronological) so we can both detect
       //    new content + feed the full conversation into the LLM context.
+      //    speakerLabel is needed for chat-structured rendering in the prompt.
       const allRows = await db
-        .select({ text: transcriptsTable.text, startMs: transcriptsTable.startMs })
+        .select({
+          text: transcriptsTable.text,
+          startMs: transcriptsTable.startMs,
+          speakerLabel: transcriptsTable.speakerLabel,
+        })
         .from(transcriptsTable)
         .where(eq(transcriptsTable.sessionId, session.id))
         .orderBy(asc(transcriptsTable.startMs));
@@ -198,7 +205,34 @@ export function startInsightTicker(userId: number, sessionId: number) {
         recentChars: RECENT_TRANSCRIPT_CHARS,
       });
 
-      // 5b. Last few insights to suppress repeats.
+      // 5b. Wave 17: pull the auto-meeting-brief + persistent user profile.
+      //     Both are best-effort, cached, and never block the decide call —
+      //     they just enrich the system prompt when available.
+      const [brief, userProfile] = await Promise.all([
+        ensureSessionBrief(session.id, fullText),
+        ensureUserProfile(userId),
+      ]);
+
+      // 5c. Build per-speaker transcript turns from the recent slice so the
+      //     LLM sees a real chat instead of one glued blob. We walk the
+      //     chronological rows from the end backwards, accumulating chars
+      //     until we cover roughly the same window as ctx.recentText.
+      const turnsBudget = RECENT_TRANSCRIPT_CHARS;
+      const recentTurns: TranscriptTurn[] = [];
+      {
+        let acc = 0;
+        for (let i = allRows.length - 1; i >= 0; i--) {
+          const row = allRows[i]!;
+          recentTurns.unshift({
+            speakerLabel: row.speakerLabel || "Speaker",
+            text: row.text,
+          });
+          acc += row.text.length + 1;
+          if (acc >= turnsBudget) break;
+        }
+      }
+
+      // 5d. Last few insights to suppress repeats.
       const recentInsights = await db
         .select({ suggestion: aiAssistsTable.suggestion })
         .from(aiAssistsTable)
@@ -212,8 +246,11 @@ export function startInsightTicker(userId: number, sessionId: number) {
         ageMinutes: ctx.ageMinutes,
         olderSummary: ctx.olderSummary,
         recentText: ctx.recentText,
+        recentTurns,
         previousInsights: previousInsightTips,
         reactive,
+        brief,
+        userProfile,
       });
 
       // Advance the char baseline even on silence so we wait for genuinely
@@ -266,7 +303,13 @@ export function startInsightTicker(userId: number, sessionId: number) {
               });
               logger.info({ userId, sessionId: session.id, sources: result.sources.length }, "[INSIGHT-TICKER] research saved");
 
-              const synth = await synthesizeInsight(ctx.recentText, result.answer, result.sources);
+              const synth = await synthesizeInsight({
+                recentText: ctx.recentText,
+                researchAnswer: result.answer,
+                researchSources: result.sources,
+                brief,
+                userProfile,
+              });
               if (synth) {
                 finalTip = synth.tip;
                 finalCategory = synth.category;

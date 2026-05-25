@@ -20,6 +20,51 @@ function normalizeLang(input: string): string {
   return lower.split("-")[0]!.slice(0, 2);
 }
 
+/** Convert Deepgram's integer speaker (0,1,2,…) to A,B,C,… */
+function speakerLabel(n: number): string {
+  return String.fromCharCode("A".charCodeAt(0) + n);
+}
+
+interface WordEntry {
+  word?: string;
+  punctuated_word?: string;
+  speaker?: number;
+}
+
+/** Group consecutive words into same-speaker runs.
+ *  Example: words [(Hallo,0),(das,0),(ist,0),(ja,1),(interessant,1)]
+ *           → [{speaker:"A", text:"Hallo das ist"}, {speaker:"B", text:"ja interessant"}]
+ */
+function splitWordsBySpeakerRuns(words: WordEntry[]): { speaker: string | null; text: string }[] {
+  const runs: { speaker: string | null; text: string }[] = [];
+  let curSpeaker: string | null | undefined = undefined; // undefined = first iter
+  let curParts: string[] = [];
+
+  const flush = () => {
+    if (curParts.length === 0) return;
+    const text = curParts.join(" ").replace(/\s+/g, " ").trim();
+    if (text) runs.push({ speaker: curSpeaker ?? null, text });
+    curParts = [];
+  };
+
+  for (const w of words) {
+    const raw = (w.punctuated_word ?? w.word ?? "").trim();
+    if (!raw) continue;
+    const s = typeof w.speaker === "number" && !Number.isNaN(w.speaker)
+      ? speakerLabel(w.speaker)
+      : null;
+    if (curSpeaker === undefined) {
+      curSpeaker = s;
+    } else if (s !== curSpeaker) {
+      flush();
+      curSpeaker = s;
+    }
+    curParts.push(raw);
+  }
+  flush();
+  return runs;
+}
+
 export const deepgramProvider: SttProvider = {
   async open(opts: SttProviderOptions): Promise<SttSession> {
     const apiKey = process.env["DEEPGRAM_API_KEY"];
@@ -39,10 +84,14 @@ export const deepgramProvider: SttProvider = {
       interim_results: "true",
       smart_format: "true",
       punctuate: "true",
-      // Longer endpointing + utterance window = fewer "ghost" mid-sentence
-      // finals and a more natural cadence (sentences instead of fragments).
-      endpointing: "900",
-      utterance_end_ms: "1500",
+      // Wave 17 tuning: shorter endpointing for snappier multi-speaker
+      // exchanges. The speaker-change splitter below means we no longer
+      // need long windows to "stitch a clean sentence" — same-speaker
+      // sentences are still merged across fragments while cross-speaker
+      // jumps now flush immediately. Net effect: lines appear faster AND
+      // speakers stay separated.
+      endpointing: "500",
+      utterance_end_ms: "1000",
     });
     if (opts.diarize) {
       params.set("diarize", "true");
@@ -75,15 +124,52 @@ export const deepgramProvider: SttProvider = {
       });
     });
 
-    // Buffer of finalized fragments that belong to the SAME utterance.
-    // Deepgram emits multiple `is_final=true` packets per utterance — one per
-    // audio segment that won't be revised. The OLD behavior emitted each one
-    // as a separate transcript line which duplicated speech in the DB. We now
-    // hold them until either `speech_final=true` or an `UtteranceEnd` event
-    // signals the natural end of the utterance.
+    // ── Utterance buffer ──────────────────────────────────────────────────
+    // Holds parts of the CURRENT utterance from a single speaker. When a
+    // speaker change is detected (either inside one fragment via word-run
+    // analysis or between fragments) we flush before switching.
     let utteranceParts: string[] = [];
     let utteranceSpeaker: string | null = null;
     let lastEmitted = "";
+
+    // Backchannel buffer — tiny acknowledgements like "ja", "ok", "mhm" get
+    // collapsed into the next "real" utterance from the same speaker. This
+    // keeps the transcript readable when one speaker is mainly listening.
+    const BACKCHANNEL_MAX_WORDS = 1;
+    const BACKCHANNEL_MAX_CHARS = 4;
+    const pendingBackchannel = new Map<string | null, string[]>(); // speaker → accumulated tokens
+
+    function isBackchannel(text: string): boolean {
+      const t = text.replace(/[.,!?…]+/g, "").trim();
+      if (!t) return true;
+      const words = t.split(/\s+/);
+      return words.length <= BACKCHANNEL_MAX_WORDS && t.length <= BACKCHANNEL_MAX_CHARS;
+    }
+
+    function consumeBackchannel(speaker: string | null): string {
+      const buf = pendingBackchannel.get(speaker);
+      if (!buf || buf.length === 0) return "";
+      pendingBackchannel.delete(speaker);
+      return buf.join(" ") + " ";
+    }
+
+    function emitFinal(text: string, speaker: string | null) {
+      const merged = text.replace(/\s+/g, " ").trim();
+      if (!merged || merged === lastEmitted) return;
+      if (opts.diarize && isBackchannel(merged)) {
+        // Park it — gets prepended to the next real utterance from this speaker.
+        const buf = pendingBackchannel.get(speaker) ?? [];
+        buf.push(merged);
+        // Cap so a single user repeatedly saying "ja" doesn't grow forever.
+        if (buf.length > 4) buf.shift();
+        pendingBackchannel.set(speaker, buf);
+        return;
+      }
+      const prefix = opts.diarize ? consumeBackchannel(speaker) : "";
+      const finalText = (prefix + merged).trim();
+      lastEmitted = finalText;
+      opts.onFinal(finalText, speaker);
+    }
 
     function flushUtterance() {
       if (utteranceParts.length === 0) return;
@@ -91,9 +177,8 @@ export const deepgramProvider: SttProvider = {
       const speaker = utteranceSpeaker;
       utteranceParts = [];
       utteranceSpeaker = null;
-      if (!merged || merged === lastEmitted) return;
-      lastEmitted = merged;
-      opts.onFinal(merged, speaker);
+      if (!merged) return;
+      emitFinal(merged, speaker);
     }
 
     ws.on("message", (raw: Buffer) => {
@@ -111,33 +196,7 @@ export const deepgramProvider: SttProvider = {
         const alts = channel?.["alternatives"] as Array<Record<string, unknown>> | undefined;
         const alt0 = alts?.[0];
         const text = (alt0?.["transcript"] as string | undefined)?.trim();
-        // Diarized output puts a `words` array under the alt, each word
-        // carrying a `speaker` (integer). We take the most common speaker
-        // in the fragment as the utterance label.
-        let fragSpeaker: string | null = null;
-        if (opts.diarize) {
-          const words = alt0?.["words"] as Array<Record<string, unknown>> | undefined;
-          if (words && words.length) {
-            const counts: Record<string, number> = {};
-            for (const w of words) {
-              const s = w["speaker"];
-              if (s === undefined || s === null) continue;
-              const key = String(s);
-              counts[key] = (counts[key] ?? 0) + 1;
-            }
-            let topKey: string | null = null;
-            let topCount = 0;
-            for (const [k, c] of Object.entries(counts)) {
-              if (c > topCount) { topCount = c; topKey = k; }
-            }
-            if (topKey !== null) {
-              // Map 0 -> A, 1 -> B, … for human-friendly labels.
-              const n = Number(topKey);
-              if (!Number.isNaN(n)) fragSpeaker = String.fromCharCode("A".charCodeAt(0) + n);
-              else fragSpeaker = topKey;
-            }
-          }
-        }
+        const words = alt0?.["words"] as WordEntry[] | undefined;
         const isFinal = data["is_final"] === true;
         const speechFinal = data["speech_final"] === true;
 
@@ -148,15 +207,82 @@ export const deepgramProvider: SttProvider = {
         }
 
         if (isFinal) {
-          utteranceParts.push(text);
-          // Record speaker on the first finalized fragment of the utterance;
-          // later fragments rarely flip speakers within one utterance.
-          if (utteranceSpeaker === null) utteranceSpeaker = fragSpeaker;
-          // Show what's confirmed so far as the live caption.
-          opts.onPartial(utteranceParts.join(" "), utteranceSpeaker);
-          if (speechFinal) flushUtterance();
+          if (opts.diarize && words && words.length) {
+            // ── Speaker-change splitter ─────────────────────────────────
+            // Each finalized fragment can contain words from MULTIPLE
+            // speakers (e.g. speaker B interrupted mid-sentence). Group
+            // the words into consecutive same-speaker runs and emit ONE
+            // final per run, splitting at the boundary.
+            const runs = splitWordsBySpeakerRuns(words);
+            if (runs.length === 0) return;
+
+            for (let i = 0; i < runs.length; i++) {
+              const run = runs[i]!;
+              const isLastRun = i === runs.length - 1;
+
+              if (utteranceSpeaker === null) {
+                // First fragment of this utterance — adopt run's speaker.
+                utteranceSpeaker = run.speaker;
+                utteranceParts.push(run.text);
+              } else if (run.speaker === utteranceSpeaker) {
+                // Same speaker continues — append.
+                utteranceParts.push(run.text);
+              } else {
+                // Speaker changed — flush what we have, then start fresh.
+                flushUtterance();
+                utteranceSpeaker = run.speaker;
+                utteranceParts.push(run.text);
+              }
+
+              // Mid-fragment speaker changes always close out the previous
+              // run (we just did). For the LAST run in the fragment we
+              // honour speech_final to decide whether to flush now.
+              if (!isLastRun) {
+                // Force-flush at every internal speaker boundary — the run
+                // we just appended IS its own complete chunk from that
+                // speaker for this fragment.
+                flushUtterance();
+              }
+            }
+
+            // Live caption: show what's confirmed so far for the current speaker.
+            if (utteranceParts.length > 0) {
+              opts.onPartial(utteranceParts.join(" "), utteranceSpeaker);
+            }
+            if (speechFinal) flushUtterance();
+          } else {
+            // Non-diarized path — keep the old behavior (merge fragments).
+            utteranceParts.push(text);
+            opts.onPartial(utteranceParts.join(" "), utteranceSpeaker);
+            if (speechFinal) flushUtterance();
+          }
         } else {
-          // Interim — append to confirmed parts so the user sees a stable prefix.
+          // Interim fragment. Compute the dominant speaker so we can show
+          // a live caption with the right speaker label.
+          let fragSpeaker: string | null = utteranceSpeaker;
+          if (opts.diarize && words && words.length) {
+            const counts: Record<string, number> = {};
+            for (const w of words) {
+              if (typeof w.speaker !== "number") continue;
+              const key = speakerLabel(w.speaker);
+              counts[key] = (counts[key] ?? 0) + 1;
+            }
+            let topKey: string | null = null;
+            let topCount = 0;
+            for (const [k, c] of Object.entries(counts)) {
+              if (c > topCount) { topCount = c; topKey = k; }
+            }
+            if (topKey) fragSpeaker = topKey;
+          }
+
+          // If the partial belongs to a NEW speaker mid-utterance, flush
+          // what we had — the previous speaker is clearly done even if
+          // Deepgram hasn't issued speech_final yet.
+          if (opts.diarize && utteranceSpeaker !== null && fragSpeaker !== null && fragSpeaker !== utteranceSpeaker && utteranceParts.length > 0) {
+            flushUtterance();
+          }
+
+          // Append interim text to confirmed parts for a stable live caption.
           const live = [...utteranceParts, text].join(" ");
           opts.onPartial(live, utteranceSpeaker ?? fragSpeaker);
         }

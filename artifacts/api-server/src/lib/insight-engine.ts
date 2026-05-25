@@ -1,5 +1,6 @@
 import { openai, LLM_MODEL, llmConfigured } from "@workspace/integrations-openai-ai-server";
 import { logger } from "./logger";
+import { formatBriefForPrompt, inferHostLabel, type SessionBrief } from "./meeting-brief";
 
 /**
  * Retry a function on transient LLM errors (429 rate-limit, 5xx overload).
@@ -156,6 +157,14 @@ Hard rules:
 - Never invent factual data; if you need numbers, set needsResearch=true.
 - If your tip would paraphrase an "Already said" entry: shouldFire=false. Saying nothing > repeating yourself.`;
 
+/** Single speaker turn — used to render the transcript as per-speaker chat
+ *  messages instead of one giant blob, so the LLM treats it as a real
+ *  conversation it's observing. */
+export interface TranscriptTurn {
+  speakerLabel: string;
+  text: string;
+}
+
 export interface DecideContext {
   /** Minutes since the meeting began. */
   ageMinutes: number;
@@ -164,10 +173,70 @@ export interface DecideContext {
   olderSummary: string | null;
   /** Last ~2500 chars of speech, chronological. */
   recentText: string;
+  /** Per-speaker turn breakdown of the same recent speech. When supplied,
+   *  the recent transcript is rendered as alternating chat-style lines with
+   *  rich speaker labels (including their role hint from the brief).
+   *  Falls back to `recentText` blob when omitted. */
+  recentTurns?: TranscriptTurn[];
   /** Previous insights given this session (one-line each). */
   previousInsights: string[];
   /** Did the just-spoken text contain a direct question? */
   reactive: boolean;
+  /** Auto-derived meeting brief — participants / topic / userRole / goal. */
+  brief?: SessionBrief | null;
+  /** Persistent user profile distilled from past sessions. */
+  userProfile?: string | null;
+}
+
+/** Build the system message, layering profile + brief on top of the base
+ *  advisor prompt so the LLM has both "who am I helping" and "what is this
+ *  specific meeting" context — exactly the situational awareness the user
+ *  asked for, without any setup form on their side. */
+function buildSystemMessage(ctx: DecideContext): string {
+  const sections: string[] = [DECIDE_PROMPT];
+
+  if (ctx.userProfile && ctx.userProfile.trim()) {
+    sections.push(
+      `\n═══ PERSISTENT USER PROFILE (across all their meetings) ═══\n${ctx.userProfile.trim()}\n` +
+        `Use this to tailor advice to who they are — their industry, role, typical situations. Don't reference it explicitly; it's background knowledge.`,
+    );
+  }
+
+  if (ctx.brief) {
+    const block = formatBriefForPrompt(ctx.brief);
+    if (block) {
+      sections.push(
+        `\n═══ THIS MEETING (auto-derived from the opening minutes) ═══\n${block}\n` +
+          `When you give a tip, anchor it to THIS meeting's reality — the user's role, their counterpart's profile, the topic at hand.`,
+      );
+    }
+  }
+
+  return sections.join("\n");
+}
+
+/** Render the recent transcript as per-speaker chat lines if turns are
+ *  available; otherwise fall back to the verbatim blob. The label gets
+ *  enriched with the brief's hint when we can match the speaker. */
+function renderRecentAsChat(turns: TranscriptTurn[] | undefined, fallback: string, brief: SessionBrief | null | undefined, hostLabel: string | null): string {
+  if (!turns || turns.length === 0) {
+    return fallback;
+  }
+  const hintFor = (label: string): string => {
+    if (!brief?.participants?.length) return "";
+    const match = brief.participants.find((p) => p.label?.toLowerCase() === label.toLowerCase() || `speaker ${label}`.toLowerCase() === p.label?.toLowerCase());
+    if (!match || !match.hint) return "";
+    return match.hint;
+  };
+  return turns
+    .map((t) => {
+      const isHost = hostLabel && t.speakerLabel === hostLabel;
+      const hint = hintFor(t.speakerLabel);
+      const role = isHost ? " — YOU're advising this speaker" : "";
+      const tag = hint ? `${t.speakerLabel} (${hint}${role})` : `${t.speakerLabel}${role}`;
+      return `[${tag}]: ${t.text.trim()}`;
+    })
+    .join("\n");
 }
 
 export async function decideInsight(
@@ -201,15 +270,20 @@ export async function decideInsight(
     ? `Meeting age: ${ctx.ageMinutes.toFixed(1)} minutes.`
     : `Meeting age: just started.`;
 
+  const hostLabel = inferHostLabel(ctx.brief ?? null);
+  const recentRendered = renderRecentAsChat(ctx.recentTurns, text, ctx.brief ?? null, hostLabel);
+
   const userMsg =
     `${ageLine}\n\n` +
     (ctx.olderSummary
       ? `Earlier in this meeting (summary):\n${ctx.olderSummary}\n\n`
       : "") +
-    `Recent transcript (verbatim, most recent first below):\n${text}\n\n` +
+    `Conversation so far (oldest at top, newest at bottom — formatted as a chat):\n${recentRendered}\n\n` +
     `Already said (never repeat — even paraphrased):\n${alreadySaid || "(nothing yet)"}\n\n` +
-    `Direct question in recent text: ${ctx.reactive ? "YES — react fast." : "no"}\n\n` +
+    `Direct question just asked: ${ctx.reactive ? "YES — react fast." : "no"}\n\n` +
     `Decide now.`;
+
+  const systemMsg = buildSystemMessage(ctx);
 
   let raw: string;
   try {
@@ -226,7 +300,7 @@ export async function decideInsight(
         temperature: 0.55,
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: DECIDE_PROMPT },
+          { role: "system", content: systemMsg },
           { role: "user", content: userMsg },
         ],
       }),
@@ -386,17 +460,44 @@ export function fallbackTipFromResearch(
   return { tip: `${compact}${source}`, category: "question" };
 }
 
+export interface SynthContext {
+  recentText: string;
+  researchAnswer: string;
+  researchSources: ResearchSourceLite[];
+  brief?: SessionBrief | null;
+  userProfile?: string | null;
+}
+
 export async function synthesizeInsight(
-  recentText: string,
-  researchAnswer: string,
-  researchSources: ResearchSourceLite[],
+  ctxOrRecent: SynthContext | string,
+  // Back-compat: legacy callers passed (recentText, researchAnswer, researchSources)
+  legacyAnswer: string = "",
+  legacySources: ResearchSourceLite[] = [],
 ): Promise<InsightSynthesis | null> {
   if (!llmConfigured) return null;
 
-  const sourcesBlock = researchSources
+  const ctx: SynthContext = typeof ctxOrRecent === "string"
+    ? { recentText: ctxOrRecent, researchAnswer: legacyAnswer, researchSources: legacySources }
+    : ctxOrRecent;
+
+  const sourcesBlock = ctx.researchSources
     .slice(0, 5)
     .map((s, i) => `${i + 1}. ${s.title} — ${domainOf(s.url)} :: ${s.snippet.slice(0, 200)}`)
     .join("\n");
+
+  // Same context-layering as decide: profile + brief give the synth call
+  // situational awareness so the tip is framed from the right perspective
+  // (e.g. "Marcel sells leasing at DL" → tip positions a number as an
+  // opportunity for Marcel, not generic market commentary).
+  const systemSections: string[] = [SYNTH_PROMPT];
+  if (ctx.userProfile && ctx.userProfile.trim()) {
+    systemSections.push(`\n[Persistent user profile]\n${ctx.userProfile.trim()}`);
+  }
+  if (ctx.brief) {
+    const block = formatBriefForPrompt(ctx.brief);
+    if (block) systemSections.push(`\n[This meeting]\n${block}`);
+  }
+  const systemMsg = systemSections.join("\n");
 
   let raw: string;
   try {
@@ -407,12 +508,12 @@ export async function synthesizeInsight(
         temperature: 0.3,
         response_format: { type: "json_object" },
         messages: [
-          { role: "system", content: SYNTH_PROMPT },
+          { role: "system", content: systemMsg },
           {
             role: "user",
             content:
-              `Recent transcript:\n${recentText}\n\n` +
-              `Research answer:\n${researchAnswer || "(no direct answer)"}\n\n` +
+              `Recent transcript:\n${ctx.recentText}\n\n` +
+              `Research answer:\n${ctx.researchAnswer || "(no direct answer)"}\n\n` +
               `Sources:\n${sourcesBlock || "(no sources)"}`,
           },
         ],

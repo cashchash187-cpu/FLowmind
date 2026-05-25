@@ -17,6 +17,15 @@ export const usersTable = pgTable("users", {
   isAdmin: boolean("is_admin").notNull().default(false),
   lastLoginAt: timestamp("last_login_at", { withTimezone: true }),
   lastLoginIp: text("last_login_ip"),
+  // Persistent advisor-context profile, distilled from recent session briefs.
+  // 4-6 lines describing who this user is professionally — gets injected into
+  // every insight prompt so the LLM "knows the user" across meetings without
+  // any setup form on the user's side.
+  profileSummary: text("profile_summary"),
+  profileSummaryGeneratedAt: timestamp("profile_summary_generated_at", { withTimezone: true }),
+  // Number of sessions counted when the profile was last regenerated — used
+  // to decide when to refresh ("3 new sessions since last refresh").
+  profileSessionCount: integer("profile_session_count").notNull().default(0),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
 });

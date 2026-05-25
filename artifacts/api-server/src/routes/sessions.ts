@@ -9,6 +9,7 @@ import {
   GetSessionParams,
   EndSessionParams,
 } from "@workspace/api-zod";
+import { refreshUserProfileInBackground } from "../lib/user-profile";
 
 const router: IRouter = Router();
 
@@ -222,6 +223,13 @@ router.patch("/sessions/:id/end", async (req, res): Promise<void> => {
     .set({ status: "ended", endedAt: new Date() })
     .where(eq(sessionsTable.id, params.data.id))
     .returning();
+
+  // Wave 17: opportunistically refresh the user's persistent profile in
+  // the background. The profile aggregates briefs from recent sessions so
+  // every new ended session is a chance to incorporate fresh signal. The
+  // helper handles its own throttling (3 new sessions OR 7 days), so this
+  // is cheap when the cap isn't due, free otherwise.
+  refreshUserProfileInBackground(req.user!.id);
 
   res.json(session);
 });

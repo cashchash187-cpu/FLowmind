@@ -1,4 +1,4 @@
-import { pgTable, text, serial, timestamp, integer } from "drizzle-orm/pg-core";
+import { pgTable, text, serial, timestamp, integer, jsonb } from "drizzle-orm/pg-core";
 import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod/v4";
 
@@ -14,6 +14,12 @@ export const sessionsTable = pgTable("sessions", {
   summary: text("summary"),
   // Folder this session sits in. null = root (un-foldered).
   folderId: integer("folder_id"),
+  // Auto-derived meeting brief — extracted by the LLM after the first ~2 min
+  // of speech. Feeds every subsequent insight + research call so they have
+  // real situational context (who's talking, what about, what's the goal).
+  // Shape: { participants:[{label,hint}], topic, userRole, goal, language, generatedAt }
+  brief: jsonb("brief"),
+  briefGeneratedAt: timestamp("brief_generated_at", { withTimezone: true }),
   lastHeartbeatAt: timestamp("last_heartbeat_at", { withTimezone: true }),
   createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp("updated_at", { withTimezone: true }).notNull().defaultNow().$onUpdate(() => new Date()),
