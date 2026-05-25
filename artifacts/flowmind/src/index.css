@@ -191,6 +191,17 @@
     @apply border-border;
   }
 
+  /* Wave 18: lock html + body to viewport so the OUTER document never
+     scrolls. All vertical scrolling happens inside an explicit scroll
+     container (<main> for normal pages, the transcript ScrollArea for
+     live sessions). On iOS this prevents Safari from "rubber-banding"
+     the body and dragging the session header behind the fixed top bar. */
+  html, body {
+    height: 100%;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
   body {
     @apply font-sans antialiased bg-background text-foreground;
   }

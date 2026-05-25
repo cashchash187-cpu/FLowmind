@@ -304,7 +304,7 @@ export default function SessionNotes() {
   };
 
   return (
-    <div className="min-h-screen bg-background flex flex-col">
+    <div className="h-full min-h-full bg-background flex flex-col">
       {/* Header */}
       <header className="flex-none h-16 border-b border-border/40 bg-card/60 backdrop-blur-2xl px-6 flex items-center justify-between sticky top-0 z-20 shadow-sm">
         <div className="flex items-center gap-4">

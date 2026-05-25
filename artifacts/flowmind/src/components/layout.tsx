@@ -157,7 +157,15 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <ThemeProvider defaultTheme="dark" storageKey="flowmind-theme">
-      <div className="flex min-h-screen w-full bg-background text-foreground font-sans">
+      {/* Wave 18: outer shell pinned to the dynamic viewport so the BODY
+          itself never becomes scrollable. Mixing `min-h-screen` (= lvh, the
+          *large* viewport that ignores Safari's address bar) with inner
+          children that size against `dvh` left ~60-80 px of body-scroll on
+          iOS, which Safari happily used to hide the session header behind
+          the fixed mobile top bar. Locking the shell to exactly `100dvh`
+          and letting <main> own the vertical scroll for normal pages fixes
+          it for everyone. */}
+      <div className="flex h-[100dvh] w-full overflow-hidden bg-background text-foreground font-sans">
 
         {/* ── Desktop sidebar ─────────────────────────────────────────────── */}
         <aside className="fixed inset-y-0 left-0 z-10 w-64 flex-col border-r border-sidebar-border bg-sidebar hidden md:flex shadow-xl shadow-black/5 overflow-hidden">
@@ -182,7 +190,13 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </aside>
 
         {/* ── Mobile top bar ───────────────────────────────────────────────── */}
-        <div className="fixed top-0 left-0 right-0 z-20 h-14 border-b border-sidebar-border bg-sidebar/95 backdrop-blur-xl flex items-center justify-between px-4 md:hidden shadow-sm">
+        {/* pt comes from env(safe-area-inset-top) so the iOS Dynamic Island /
+            notch never overlaps the logo/menu icons. The container height
+            (h-14) plus that padding visually scales on notched devices. */}
+        <div
+          className="fixed top-0 left-0 right-0 z-20 h-14 border-b border-sidebar-border bg-sidebar/95 backdrop-blur-xl flex items-center justify-between px-4 md:hidden shadow-sm"
+          style={{ paddingTop: "env(safe-area-inset-top)" }}
+        >
           <SidebarLogo />
           <div className="flex items-center gap-1.5">
             <ThemeToggle />
@@ -214,9 +228,15 @@ export function Layout({ children }: { children: React.ReactNode }) {
         </div>
 
         {/* ── Main content ─────────────────────────────────────────────────── */}
-        <div className="flex flex-1 flex-col min-w-0 md:pl-64">
+        {/* min-h-0 is REQUIRED on the flex parent so the child <main> can
+            properly own its own scroll instead of stretching the body. */}
+        <div className="flex flex-1 flex-col min-w-0 min-h-0 md:pl-64">
           <div className="h-14 md:hidden flex-none" />
-          <main className="flex-1 min-w-0 relative z-0 overflow-x-hidden">
+          {/* overflow-y-auto = pages that don't manage their own height
+              (Dashboard, Settings, etc.) scroll WITHIN main, never on the
+              body. Pages that are full-viewport (Session) use h-full and
+              don't trigger this scroll. */}
+          <main className="flex-1 min-w-0 min-h-0 relative z-0 overflow-x-hidden overflow-y-auto">
             {children}
           </main>
         </div>

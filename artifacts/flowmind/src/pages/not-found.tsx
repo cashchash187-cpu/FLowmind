@@ -5,7 +5,7 @@ import { Button } from "@/components/ui/button";
 
 export default function NotFound() {
   return (
-    <div className="min-h-[calc(100vh-56px)] md:min-h-screen flex items-center justify-center p-6 relative overflow-hidden">
+    <div className="min-h-full flex items-center justify-center p-6 relative overflow-hidden">
 
       {/* Ambient background orbs */}
       <div className="absolute inset-0 pointer-events-none overflow-hidden">

@@ -48,7 +48,10 @@ export default function NewSession() {
   };
 
   return (
-    <div className="p-6 md:p-8 max-w-3xl mx-auto space-y-10 flex flex-col items-center justify-center min-h-[calc(100vh-80px)]">
+    // Wave 18: Layout now owns the viewport-height shell, so use min-h-full
+    // to fill the scrollable <main> instead of an obsolete vh calc that
+    // assumed the old shell's chrome heights.
+    <div className="p-6 md:p-8 max-w-3xl mx-auto space-y-10 flex flex-col items-center justify-center min-h-full">
       <motion.div
         initial={{ opacity: 0, y: -20 }}
         animate={{ opacity: 1, y: 0 }}
