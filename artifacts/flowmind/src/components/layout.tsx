@@ -157,15 +157,16 @@ export function Layout({ children }: { children: React.ReactNode }) {
 
   return (
     <ThemeProvider defaultTheme="dark" storageKey="flowmind-theme">
-      {/* Wave 18: outer shell pinned to the dynamic viewport so the BODY
-          itself never becomes scrollable. Mixing `min-h-screen` (= lvh, the
-          *large* viewport that ignores Safari's address bar) with inner
-          children that size against `dvh` left ~60-80 px of body-scroll on
-          iOS, which Safari happily used to hide the session header behind
-          the fixed mobile top bar. Locking the shell to exactly `100dvh`
-          and letting <main> own the vertical scroll for normal pages fixes
-          it for everyone. */}
-      <div className="flex h-[100dvh] w-full overflow-hidden bg-background text-foreground font-sans">
+      {/* Wave 18b: pinned to the SMALLEST possible viewport (`100svh`) so
+          the bottom mobile bar always sits flush with the visible area
+          regardless of Safari's address-bar / toolbar state. Earlier
+          attempt with `100dvh` left ~200 px of unused dark space below
+          the buttons on iPhone because dvh accounted for the toolbar
+          being hidden even when it was still visible. svh = the
+          guaranteed-visible minimum, no overflow tricks. Tradeoff: when
+          the toolbar auto-hides on scroll, that newly-revealed space
+          stays unused — fine for our chrome-mostly-visible UX. */}
+      <div className="flex h-[100svh] w-full overflow-hidden bg-background text-foreground font-sans">
 
         {/* ── Desktop sidebar ─────────────────────────────────────────────── */}
         <aside className="fixed inset-y-0 left-0 z-10 w-64 flex-col border-r border-sidebar-border bg-sidebar hidden md:flex shadow-xl shadow-black/5 overflow-hidden">
@@ -231,7 +232,15 @@ export function Layout({ children }: { children: React.ReactNode }) {
         {/* min-h-0 is REQUIRED on the flex parent so the child <main> can
             properly own its own scroll instead of stretching the body. */}
         <div className="flex flex-1 flex-col min-w-0 min-h-0 md:pl-64">
-          <div className="h-14 md:hidden flex-none" />
+          {/* Spacer height = h-14 (56 px) + iOS Dynamic Island / notch
+              safe-area-inset-top, so the spacer exactly matches the visual
+              height of the fixed mobile top bar (which also pads itself by
+              that inset). Without the inset added here the session header
+              would shift up under the notch on notched iPhones. */}
+          <div
+            className="md:hidden flex-none"
+            style={{ height: "calc(3.5rem + env(safe-area-inset-top))" }}
+          />
           {/* overflow-y-auto = pages that don't manage their own height
               (Dashboard, Settings, etc.) scroll WITHIN main, never on the
               body. Pages that are full-viewport (Session) use h-full and
