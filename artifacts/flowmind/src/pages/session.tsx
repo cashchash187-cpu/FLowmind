@@ -531,12 +531,13 @@ export default function SessionLive() {
 
   return (
     <TooltipProvider delayDuration={300}>
-    {/* Wave 18: h-full means "fill the parent <main> exactly". Layout.tsx
-        now owns the viewport-locking via h-[100dvh] on the outer shell, so
-        we don't need a per-page calc against dvh anymore. This kills the
-        old body-scroll-on-mount that hid the session header behind the
-        mobile top bar on iOS Safari. */}
-    <div className="flex flex-col w-full max-w-full h-full bg-background overflow-hidden" data-testid="session-live-view">
+    {/* Wave 18c: h-full + max-h-full + min-h-0 belt-and-suspenders so the
+        session NEVER grows beyond the parent <main>. Earlier the transcript
+        ScrollArea's internal content sometimes forced the session to grow,
+        and because <main> is overflow-y-auto, that growth scrolled the
+        whole session including the sticky header out of view. max-h-full
+        is the hard ceiling. */}
+    <div className="flex flex-col w-full max-w-full h-full max-h-full min-h-0 bg-background overflow-hidden" data-testid="session-live-view">
       {/* Header */}
       <header className="flex-none h-16 border-b border-border/50 bg-card/50 backdrop-blur px-4 sm:px-6 flex items-center justify-between sticky top-0 z-20">
         <div className="flex items-center gap-3 min-w-0">
@@ -781,14 +782,25 @@ export default function SessionLive() {
           to flex-row only at lg+ (≥1024px) where there's enough horizontal
           room for a real side column. Wave 18 raised this from md to lg
           because iPad mini portrait at 768px gave the transcript only
-          ~512-320=192px of width once sidebar + insight column took theirs. */}
-      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden min-h-0">
+          ~512-320=192px of width once sidebar + insight column took theirs.
+          Wave 18c: paddingBottom reserves ~208 px on mobile for the now-
+          position-fixed bottom bar (AI grid + mic + safe-area). Children
+          (transcript wrapper, MobileDock) stack within main minus that
+          padding, so they never get hidden by the fixed bar. */}
+      <div className="flex-1 flex flex-col lg:flex-row overflow-hidden min-h-0 pb-[calc(208px+env(safe-area-inset-bottom))] lg:pb-0">
         {/* min-h-[160px] guarantees the transcript area always shows a few
             readable lines even when the insight dock + bottom bar try to
-            steal more space on tiny phones. */}
-        <div className="flex-1 flex overflow-hidden min-h-[160px] relative">
-          <div className="flex-1 flex flex-col overflow-hidden relative">
-            <ScrollArea className="flex-1 px-4 sm:px-6 py-4">
+            steal more space on tiny phones. min-h-0 + max-h-full force
+            flex-shrinkage when the inner ScrollArea content would otherwise
+            push the wrapper past the parent — fixes the bug where a long
+            transcript scrolled the entire session out of view including
+            the sticky settings header. */}
+        <div className="flex-1 flex overflow-hidden min-h-[160px] max-h-full relative">
+          <div className="flex-1 flex flex-col overflow-hidden min-h-0 relative">
+            <ScrollArea className="flex-1 min-h-0 px-4 sm:px-6 py-4">
+              {/* Wave 18c: the main flex area itself reserves space for the
+                  position-fixed mobile bar via paddingBottom, so the inner
+                  content keeps a small pb-4 like normal scroll padding. */}
               <div className="max-w-3xl mx-auto space-y-3 pb-4 lg:pb-44">
                 {transcriptsLoading && !optimistic.length ? (
                   <div className="space-y-4 pt-4">
@@ -1041,14 +1053,17 @@ export default function SessionLive() {
           />
         )}
 
-        {/* ─── MOBILE + iPad-portrait bottom bar — in flex flow, sits below
-             the insight dock so they no longer overlap. Sibling of the
-             transcript wrapper. Hidden at lg+ where the desktop floating
-             bar takes over. Safe-area padding so the iOS home indicator
-             never overlaps the controls. ─── */}
+        {/* ─── MOBILE + iPad-portrait bottom bar ────────────────────────────
+             Wave 18c: switched from flex-flow `flex-none` to
+             `position: fixed bottom-0` so the bar is ALWAYS glued to the
+             visible viewport bottom, irrespective of how iOS Safari
+             computes svh/dvh. Earlier the flex-flow bar ended up ~200 px
+             above the real bottom on iPhone because of viewport-unit
+             quirks. The transcript wrapper above reserves pb-52 to keep
+             the last messages visible above the fixed bar. */}
         {(isSessionActive || session.status === "idle") && (
           <div
-            className="lg:hidden flex-none px-3 pt-2 pb-3 border-t border-border/40 bg-background"
+            className="lg:hidden fixed bottom-0 left-0 right-0 z-30 px-3 pt-2 pb-3 border-t border-border/40 bg-background/95 backdrop-blur"
             style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 0.75rem)" }}
           >
             <div className="flex flex-col gap-2 max-w-md mx-auto">
