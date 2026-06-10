@@ -1,12 +1,16 @@
 import { useGetSessionStats, useGetRecentSessions } from "@workspace/api-client-react";
 import { Link } from "wouter";
-import { Activity, Clock, FileText, Play, Zap, ArrowRight, Mic, TrendingUp } from "lucide-react";
+import { Activity, Clock, FileText, Play, Zap, ArrowRight, Mic, TrendingUp, BellRing, BrainCircuit } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import { motion, useMotionValue, useTransform, animate } from "framer-motion";
 import { useEffect, useState } from "react";
+import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
+import { apiFetch } from "@/lib/auth";
+
+interface DashReminder { id: number; label: string; dueAt: string; done: boolean }
 
 function CountUp({ to, suffix = "" }: { to: number; suffix?: string }) {
   const [display, setDisplay] = useState(0);
@@ -45,6 +49,25 @@ const item = {
 export default function Dashboard() {
   const { data: stats, isLoading: statsLoading } = useGetSessionStats();
   const { data: recentSessions, isLoading: recentLoading } = useGetRecentSessions();
+  const queryClient = useQueryClient();
+
+  const { data: reminders = [] } = useQuery<DashReminder[]>({
+    queryKey: ["dashboard-reminders"],
+    queryFn: async () => {
+      const res = await apiFetch("/api/reminders");
+      return res.ok ? res.json() : [];
+    },
+    refetchInterval: 60_000,
+  });
+  const doneReminder = useMutation({
+    mutationFn: async (id: number) => { await apiFetch(`/api/reminders/${id}`, { method: "PATCH", body: JSON.stringify({ done: true }) }); },
+    onSuccess: () => queryClient.invalidateQueries({ queryKey: ["dashboard-reminders"] }),
+  });
+  // Show only what's due within the next 14 days (or overdue) — keeps the
+  // dashboard focused on what needs attention now.
+  const soonReminders = reminders
+    .filter((r) => !r.done && new Date(r.dueAt).getTime() < Date.now() + 14 * 86400_000)
+    .slice(0, 5);
 
   return (
     <div className="relative overflow-hidden">
@@ -136,6 +159,50 @@ export default function Dashboard() {
             </motion.div>
           ))}
         </motion.div>
+
+        {/* ── Memory: due reminders ──────────────────────────────────────── */}
+        {soonReminders.length > 0 && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.28, duration: 0.5, ease: "easeOut" }}
+          >
+            <Card className="bg-card border-amber-500/25 shadow-sm overflow-hidden">
+              <CardHeader className="flex flex-row items-end justify-between border-b border-amber-500/20 pb-3.5 px-6 pt-4 bg-amber-500/5">
+                <div className="flex items-center gap-2.5">
+                  <BellRing className="h-4 w-4 text-amber-500" />
+                  <CardTitle className="text-base font-bold">Anstehende Erinnerungen</CardTitle>
+                </div>
+                <Link href="/brain">
+                  <Button variant="ghost" size="sm" className="gap-1.5 text-amber-600 hover:text-amber-600 hover:bg-amber-500/10 h-8 rounded-lg text-xs font-semibold">
+                    Memory <ArrowRight className="h-3.5 w-3.5" />
+                  </Button>
+                </Link>
+              </CardHeader>
+              <CardContent className="p-3 space-y-1">
+                {soonReminders.map((r) => {
+                  const due = new Date(r.dueAt);
+                  const overdue = due.getTime() < Date.now();
+                  return (
+                    <div key={r.id} className="flex items-center gap-3 px-3 py-2 rounded-lg hover:bg-muted/40 transition-colors">
+                      <button
+                        type="button"
+                        onClick={() => doneReminder.mutate(r.id)}
+                        className="h-5 w-5 rounded border border-border hover:border-amber-500 hover:bg-amber-500/10 flex items-center justify-center flex-none transition-colors"
+                        aria-label="Erledigt"
+                        data-testid={`dash-reminder-${r.id}`}
+                      />
+                      <span className="text-sm flex-1 min-w-0 truncate">{r.label}</span>
+                      <span className={`text-xs font-mono tabular-nums flex-none ${overdue ? "text-red-500 font-bold" : "text-muted-foreground"}`}>
+                        {overdue ? "überfällig · " : ""}{due.toLocaleDateString("de-DE", { day: "2-digit", month: "2-digit" })}
+                      </span>
+                    </div>
+                  );
+                })}
+              </CardContent>
+            </Card>
+          </motion.div>
+        )}
 
         {/* ── Recent sessions ─────────────────────────────────────────────── */}
         <motion.div

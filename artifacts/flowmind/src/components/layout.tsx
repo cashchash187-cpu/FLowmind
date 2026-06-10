@@ -8,6 +8,7 @@ import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
 import { motion } from "framer-motion";
 import { useAuthStore } from "@/lib/auth";
 import { apiFetch } from "@/lib/auth";
+import { QuickCapture } from "@/components/quick-capture";
 
 function ThemeToggle() {
   const { theme, setTheme } = useTheme();
@@ -155,6 +156,7 @@ function SidebarLogo() {
 
 export function Layout({ children }: { children: React.ReactNode }) {
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [location] = useLocation();
 
   return (
     <ThemeProvider defaultTheme="dark" storageKey="flowmind-theme">
@@ -251,6 +253,11 @@ export function Layout({ children }: { children: React.ReactNode }) {
             {children}
           </main>
         </div>
+
+        {/* App-wide quick-capture into Memory (hidden inside live sessions —
+            they have their own mic + Merken button and the floating button
+            would collide with the fixed bottom bar). */}
+        {!location.startsWith("/session/") && <QuickCapture />}
       </div>
     </ThemeProvider>
   );
