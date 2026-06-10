@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { Link, useParams } from "wouter";
 import {
   useGetSession,
@@ -1054,14 +1055,17 @@ export default function SessionLive() {
         )}
 
         {/* ─── MOBILE + iPad-portrait bottom bar ────────────────────────────
-             Wave 18c: switched from flex-flow `flex-none` to
-             `position: fixed bottom-0` so the bar is ALWAYS glued to the
-             visible viewport bottom, irrespective of how iOS Safari
-             computes svh/dvh. Earlier the flex-flow bar ended up ~200 px
-             above the real bottom on iPhone because of viewport-unit
-             quirks. The transcript wrapper above reserves pb-52 to keep
-             the last messages visible above the fixed bar. */}
-        {(isSessionActive || session.status === "idle") && (
+             Wave 18c used `position: fixed bottom-0` so the bar glues to
+             the visible viewport bottom irrespective of iOS svh/dvh quirks.
+             Wave 19: rendered through a PORTAL into document.body. The app
+             router wraps every page in a framer-motion div with
+             `willChange: transform`, which makes that div the containing
+             block for position:fixed — the bar was anchoring to the
+             motion-div's bottom edge (~130 px BELOW the real viewport) and
+             also stretched <main>'s scrollHeight, which let the whole
+             session scroll away under the top bar. Portaling out of the
+             transformed ancestor restores true viewport anchoring. */}
+        {(isSessionActive || session.status === "idle") && createPortal(
           <div
             className="lg:hidden fixed bottom-0 left-0 right-0 z-30 px-3 pt-2 pb-3 border-t border-border/40 bg-background/95 backdrop-blur"
             style={{ paddingBottom: "calc(env(safe-area-inset-bottom) + 0.75rem)" }}
@@ -1160,7 +1164,8 @@ export default function SessionLive() {
                 </div>
               )}
             </div>
-          </div>
+          </div>,
+          document.body
         )}
 
         {/* Research panel — copilot mode: desktop (lg+) Sheet slide-over.

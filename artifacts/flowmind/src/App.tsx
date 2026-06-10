@@ -45,8 +45,15 @@ function PageTransition({ children }: { children: React.ReactNode }) {
   // immediately fixes that — a brief crossfade is fine.
   return (
     <AnimatePresence initial={false}>
+      {/* h-full + overflow-y-auto: the motion div owns BOTH the page height
+          and the page scroll. Pages that fill the viewport (live session)
+          use h-full and never scroll — their sticky headers stay pinned no
+          matter how long the transcript grows. Pages with long content
+          (dashboard, settings) scroll inside this div. The parent <main>
+          is overflow-hidden so nothing above this level ever scrolls. */}
       <motion.div
         key={location}
+        className="h-full overflow-y-auto"
         initial={{ opacity: 0, y: 6 }}
         animate={{ opacity: 1, y: 0 }}
         exit={{ opacity: 0 }}

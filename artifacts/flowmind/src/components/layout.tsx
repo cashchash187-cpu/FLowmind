@@ -241,11 +241,12 @@ export function Layout({ children }: { children: React.ReactNode }) {
             className="md:hidden flex-none"
             style={{ height: "calc(3.5rem + env(safe-area-inset-top))" }}
           />
-          {/* overflow-y-auto = pages that don't manage their own height
-              (Dashboard, Settings, etc.) scroll WITHIN main, never on the
-              body. Pages that are full-viewport (Session) use h-full and
-              don't trigger this scroll. */}
-          <main className="flex-1 min-w-0 min-h-0 relative z-0 overflow-x-hidden overflow-y-auto">
+          {/* Wave 19: overflow-HIDDEN — the page-transition wrapper inside
+              (App.tsx PageTransition) now owns the vertical scroll with
+              h-full + overflow-y-auto. Keeping main un-scrollable means a
+              full-viewport page like the live session can NEVER be pushed
+              out of view by its own growing content. */}
+          <main className="flex-1 min-w-0 min-h-0 relative z-0 overflow-hidden">
             {children}
           </main>
         </div>

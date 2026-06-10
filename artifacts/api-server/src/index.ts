@@ -52,9 +52,16 @@ await seedDatabase();
 
 const { startIdleTicker } = await import("./lib/idle-ticker");
 const { startRetentionLoop } = await import("./lib/retention");
+const { startSessionJanitor, sweepStaleSessions } = await import("./lib/session-janitor");
 const { reviveActiveInsightTickers } = await import("./lib/insight-ticker");
 startIdleTicker();
 startRetentionLoop();
+// End abandoned sessions (no heartbeat for 24 h) so they stop cluttering
+// the UI and holding insight tickers open. Runs BEFORE the ticker revive
+// below so we don't revive tickers for sessions the janitor is about to
+// close.
+await sweepStaleSessions();
+startSessionJanitor();
 // Restart insight engines that were live before the previous deploy died.
 // Fire-and-forget; never blocks server startup.
 reviveActiveInsightTickers().catch(() => {});
