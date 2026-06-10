@@ -10,6 +10,7 @@ import {
   EndSessionParams,
 } from "@workspace/api-zod";
 import { refreshUserProfileInBackground } from "../lib/user-profile";
+import { distillSessionToMemory } from "../lib/meeting-distiller";
 
 const router: IRouter = Router();
 
@@ -230,6 +231,14 @@ router.patch("/sessions/:id/end", async (req, res): Promise<void> => {
   // helper handles its own throttling (3 new sessions OR 7 days), so this
   // is cheap when the cap isn't due, free otherwise.
   refreshUserProfileInBackground(req.user!.id);
+
+  // Wave 21: Meeting→Memory bridge. Only on the FIRST transition to
+  // "ended" (re-ending an already-ended session must not duplicate the
+  // memory items). Fire-and-forget — distillation takes a few LLM calls
+  // and the user shouldn't wait on it to leave the page.
+  if (existing.status !== "ended" && session.userId != null) {
+    void distillSessionToMemory(session.id, session.userId).catch(() => {});
+  }
 
   res.json(session);
 });

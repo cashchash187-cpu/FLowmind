@@ -64,7 +64,7 @@ export interface ProcessedMemo {
  *  both into ONE call by sending the index plus the full content of the 3
  *  most plausible pages (cheap heuristic: same-folder + recently updated).
  *  For a personal note system the index stays small, so this is fine. */
-export async function processMemo(userId: number, rawText: string, source: "voice" | "text"): Promise<ProcessedMemo> {
+export async function processMemo(userId: number, rawText: string, source: "voice" | "text" | "meeting"): Promise<ProcessedMemo> {
   if (!llmConfigured) throw new Error("LLM not configured");
 
   const text = rawText.trim();

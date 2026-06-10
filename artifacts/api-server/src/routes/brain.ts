@@ -28,7 +28,8 @@ router.post("/memos", async (req, res): Promise<void> => {
   }
 
   try {
-    const result = await processMemo(user.id, text, source === "voice" ? "voice" : "text");
+    const validSource = source === "voice" || source === "meeting" ? source : "text";
+    const result = await processMemo(user.id, text, validSource);
     res.status(201).json(result);
   } catch (err) {
     req.log.error({ err }, "[BRAIN] memo processing failed");

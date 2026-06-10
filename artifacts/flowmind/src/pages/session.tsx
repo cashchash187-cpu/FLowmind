@@ -43,6 +43,7 @@ import {
   ToggleRight,
   Settings2,
   Check,
+  BookmarkPlus,
 } from "lucide-react";
 import {
   Dialog,
@@ -479,6 +480,34 @@ export default function SessionLive() {
       .map((t) => `${t.speakerLabel}: ${t.text}`)
       .join("\n");
   }, [allTranscripts]);
+
+  // Wave 21: "Merk dir das" — pins the recent conversation moment into the
+  // Memory system. Takes the last ~600 chars of transcript and lets the
+  // memo agent file it (same flow as a spoken memo on /brain).
+  const rememberMoment = useMutation({
+    mutationFn: async () => {
+      const tail = allTranscripts.slice(-6).map((t) => `${t.speakerLabel}: ${t.text}`).join("\n").slice(-600);
+      if (!tail.trim()) throw new Error("Noch nichts gesagt — es gibt nichts zu merken.");
+      const res = await apiFetch("/api/memos", {
+        method: "POST",
+        body: JSON.stringify({
+          text: `[Live aus Meeting "${session?.title ?? ""}"] ${tail}`,
+          source: "meeting",
+        }),
+      });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { message?: string };
+        throw new Error(data.message ?? `Fehler ${res.status}`);
+      }
+      return res.json() as Promise<{ summary: string; page: { folder: string; title: string } }>;
+    },
+    onSuccess: (r) => {
+      toast({ title: "Gemerkt ✓", description: `${r.summary} → ${r.page.folder} / ${r.page.title}` });
+    },
+    onError: (err: Error) => {
+      toast({ title: "Konnte nicht merken", description: err.message, variant: "destructive" });
+    },
+  });
 
   const handleAiAssist = (mode: "objection" | "answer" | "explain" | "logic_check") => {
     setAiResponse(null);
@@ -953,6 +982,21 @@ export default function SessionLive() {
                     )}
                   </div>
 
+                  {/* "Merk dir das" — pin this moment into Memory. */}
+                  <div className="h-5 w-px bg-border mx-1" />
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    className="rounded-xl h-8 px-3 text-xs gap-1.5 hover:bg-primary/10 hover:text-primary"
+                    onClick={() => rememberMoment.mutate()}
+                    disabled={rememberMoment.isPending || allTranscripts.length === 0}
+                    title="Diesen Gesprächsmoment ins Memory speichern"
+                    data-testid="button-remember"
+                  >
+                    {rememberMoment.isPending ? <Loader2 className="h-3 w-3 animate-spin" /> : <BookmarkPlus className="h-3 w-3" />}
+                    <span>Merken</span>
+                  </Button>
+
                   {/* Research lives next to the AI modes now (same row). */}
                   {researchAvailable && (
                     <>
@@ -1152,6 +1196,19 @@ export default function SessionLive() {
                     <MicVisualizer isListening />
                   </div>
                 )}
+                {/* "Merk dir das" — square touch target next to the mic. */}
+                <Button
+                  variant="outline"
+                  className="flex-none h-14 w-14 rounded-xl p-0"
+                  onClick={() => rememberMoment.mutate()}
+                  disabled={rememberMoment.isPending || allTranscripts.length === 0}
+                  aria-label="Diesen Moment ins Memory speichern"
+                  data-testid="button-remember-mobile"
+                >
+                  {rememberMoment.isPending
+                    ? <Loader2 className="h-5 w-5 animate-spin" />
+                    : <BookmarkPlus className="h-5 w-5" />}
+                </Button>
                 {requestAi.isPending && (
                   <Loader2 className="h-5 w-5 animate-spin text-primary flex-none" />
                 )}
