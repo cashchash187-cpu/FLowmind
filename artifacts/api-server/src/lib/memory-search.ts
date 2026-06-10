@@ -77,6 +77,39 @@ function scoreOverlap(queryTokens: Set<string>, bodyText: string, titleText: str
   return bodyHits + titleHits * 3;
 }
 
+/**
+ * Retrieval-only (no LLM): find the memo PAGES most relevant to a free-text
+ * topic. Used by the pre-meeting context panel — when you start a meeting
+ * titled "Deutsche Leasing × Müller GmbH", this surfaces what you already
+ * captured about Müller / Kevin / the deal. The integration competitors
+ * can't match: your second brain feeds the live copilot.
+ */
+export async function relevantPagesForTopic(userId: number, topic: string, limit = 4): Promise<MemorySource[]> {
+  const t = topic.trim();
+  if (!t) return [];
+  const pages = await db.select().from(memoPagesTable).where(eq(memoPagesTable.userId, userId)).orderBy(desc(memoPagesTable.updatedAt)).limit(200);
+  if (pages.length === 0) return [];
+
+  const qTokens = new Set(tokens(t));
+  if (qTokens.size === 0) return [];
+
+  const ranked = pages
+    .map((p) => ({
+      p,
+      score: scoreOverlap(qTokens, `${p.title}\n${p.content}`, `${p.folder} ${p.title}`),
+    }))
+    .filter((r) => r.score > 0)
+    .sort((a, b) => (b.score - a.score) || (new Date(b.p.updatedAt).getTime() - new Date(a.p.updatedAt).getTime()))
+    .slice(0, limit);
+
+  return ranked.map((r) => ({
+    kind: "page" as const,
+    id: r.p.id,
+    label: `${r.p.folder} / ${r.p.title}`,
+    snippet: r.p.content.replace(/\s+/g, " ").slice(0, 220),
+  }));
+}
+
 export async function answerFromMemory(userId: number, question: string): Promise<MemoryAnswer> {
   if (!llmConfigured) throw new Error("LLM not configured");
   const q = question.trim();

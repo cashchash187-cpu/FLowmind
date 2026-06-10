@@ -1,8 +1,8 @@
 import { Router, type IRouter } from "express";
 import { eq, and, desc, asc, gte } from "drizzle-orm";
-import { db, memosTable, memoPagesTable, remindersTable } from "@workspace/db";
+import { db, memosTable, memoPagesTable, remindersTable, sessionsTable } from "@workspace/db";
 import { processMemo } from "../lib/memo-agent";
-import { answerFromMemory } from "../lib/memory-search";
+import { answerFromMemory, relevantPagesForTopic } from "../lib/memory-search";
 import { llmConfigured } from "@workspace/integrations-openai-ai-server";
 
 const router: IRouter = Router();
@@ -72,6 +72,37 @@ router.post("/brain/ask", async (req, res): Promise<void> => {
   } catch (err) {
     req.log.error({ err }, "[BRAIN] ask failed");
     res.status(502).json({ error: "ask_failed", message: "Konnte die Frage gerade nicht beantworten. Versuch es nochmal." });
+  }
+});
+
+// GET /api/brain/context?sessionId=N — what the user already knows (from
+// Memory) about this meeting. Topic = session title + brief topic/participants.
+router.get("/brain/context", async (req, res): Promise<void> => {
+  const sessionId = Number(req.query.sessionId);
+  if (Number.isNaN(sessionId)) { res.status(400).json({ error: "sessionId required" }); return; }
+
+  const [session] = await db
+    .select({ title: sessionsTable.title, userId: sessionsTable.userId, brief: sessionsTable.brief })
+    .from(sessionsTable)
+    .where(eq(sessionsTable.id, sessionId))
+    .limit(1);
+  if (!session || (session.userId !== req.user!.id && !req.user!.isAdmin)) {
+    res.status(404).json({ error: "Session not found" });
+    return;
+  }
+
+  // Build the topic string from title + brief signals.
+  let topic = session.title ?? "";
+  const brief = session.brief as { topic?: string; participants?: { hint?: string }[] } | null;
+  if (brief?.topic) topic += " " + brief.topic;
+  if (brief?.participants?.length) topic += " " + brief.participants.map((p) => p.hint ?? "").join(" ");
+
+  try {
+    const sources = await relevantPagesForTopic(req.user!.id, topic, 4);
+    res.json({ sources });
+  } catch (err) {
+    req.log.error({ err }, "[BRAIN] context lookup failed");
+    res.json({ sources: [] });
   }
 });
 

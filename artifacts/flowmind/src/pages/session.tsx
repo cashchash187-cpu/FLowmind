@@ -44,6 +44,7 @@ import {
   Settings2,
   Check,
   BookmarkPlus,
+  BrainCircuit,
 } from "lucide-react";
 import {
   Dialog,
@@ -77,7 +78,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { Alert, AlertDescription } from "@/components/ui/alert";
-import { useQueryClient } from "@tanstack/react-query";
+import { useQueryClient, useQuery } from "@tanstack/react-query";
 import {
   type LiveTranscriptChunk,
   LANGUAGE_OPTIONS,
@@ -509,6 +510,23 @@ export default function SessionLive() {
     },
   });
 
+  // Wave 24: pre-meeting context — what the user already knows from Memory
+  // about this meeting's topic/participants. The integration that makes the
+  // second brain feed the live copilot.
+  const [contextDismissed, setContextDismissed] = useState(false);
+  const { data: memoryContext } = useQuery<{ sources: { kind: string; id: number; label: string; snippet: string }[] }>({
+    queryKey: ["session-memory-context", sessionId],
+    enabled: !!sessionId && !contextDismissed,
+    queryFn: async () => {
+      const res = await apiFetch(`/api/brain/context?sessionId=${sessionId}`);
+      return res.ok ? res.json() : { sources: [] };
+    },
+    // Re-check once after the brief likely generated (~2 min in).
+    refetchInterval: contextDismissed ? false : 90_000,
+    staleTime: 60_000,
+  });
+  const contextSources = memoryContext?.sources ?? [];
+
   const handleAiAssist = (mode: "objection" | "answer" | "explain" | "logic_check") => {
     setAiResponse(null);
     setAiLimitExceeded(false);
@@ -793,6 +811,41 @@ export default function SessionLive() {
             <AlertCircle className="h-4 w-4" />
             <AlertDescription className="text-xs">{speech.error}</AlertDescription>
           </Alert>
+        </div>
+      )}
+
+      {/* Wave 24: "Was du schon weißt" — Memory context for this meeting. */}
+      {isSessionActive && !contextDismissed && contextSources.length > 0 && (
+        <div className="flex-none px-4 pt-3">
+          <div className="max-w-3xl mx-auto rounded-xl border border-primary/25 bg-gradient-to-br from-primary/8 to-transparent px-3.5 py-2.5">
+            <div className="flex items-center justify-between gap-2 mb-1.5">
+              <div className="flex items-center gap-2 text-[11px] font-mono uppercase tracking-widest text-primary font-semibold">
+                <BrainCircuit className="h-3.5 w-3.5" />
+                Was du schon weißt
+              </div>
+              <button
+                type="button"
+                onClick={() => setContextDismissed(true)}
+                className="text-muted-foreground/50 hover:text-foreground"
+                aria-label="Ausblenden"
+              >
+                <span className="text-[10px] font-mono uppercase tracking-wider">ausblenden</span>
+              </button>
+            </div>
+            <div className="space-y-1">
+              {contextSources.map((s) => (
+                <Link key={`${s.kind}-${s.id}`} href={`/brain`}>
+                  <div className="flex items-start gap-2 text-xs py-1 px-1.5 rounded-lg hover:bg-primary/5 cursor-pointer transition-colors">
+                    <FileText className="h-3 w-3 text-primary/60 flex-none mt-0.5" />
+                    <span className="min-w-0">
+                      <span className="font-mono text-[10px] text-primary/80">{s.label}</span>
+                      <span className="block text-muted-foreground truncate">{s.snippet}</span>
+                    </span>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          </div>
         </div>
       )}
 
