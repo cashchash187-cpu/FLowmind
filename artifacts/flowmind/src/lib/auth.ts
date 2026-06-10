@@ -76,5 +76,22 @@ export async function apiFetch(path: string, init?: RequestInit) {
     headers,
     credentials: "include", // always send cookies
   });
+  // Expired JWT / revoked session → broadcast so the app can clear the
+  // persisted auth state and let AuthGate redirect to /login. Without
+  // this, a user returning after the 7-day token expiry stays "logged in"
+  // visually while every action fails with a cryptic error.
+  if (res.status === 401 && !path.includes("/auth/login")) {
+    window.dispatchEvent(new CustomEvent("fm:unauthorized"));
+  }
   return res;
+}
+
+// Global handler: any 401 from apiFetch or the generated API client clears
+// the persisted auth state. AuthGate reacts to the store change and
+// redirects to /login automatically.
+if (typeof window !== "undefined") {
+  window.addEventListener("fm:unauthorized", () => {
+    const { token, user, clearAuth } = useAuthStore.getState();
+    if (token || user) clearAuth();
+  });
 }

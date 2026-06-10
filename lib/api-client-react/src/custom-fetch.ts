@@ -375,6 +375,12 @@ export async function customFetch<T = unknown>(
   const response = await fetch(input, { ...init, method, headers, credentials: "include" });
 
   if (!response.ok) {
+    // Session expired / token invalid → broadcast so the app shell can
+    // clear its persisted auth state and bounce to the login page instead
+    // of surfacing cryptic per-feature errors ("failed to create session").
+    if (response.status === 401 && typeof window !== "undefined") {
+      window.dispatchEvent(new CustomEvent("fm:unauthorized"));
+    }
     const errorData = await parseErrorBody(response, method);
     throw new ApiError(response, errorData, requestInfo);
   }

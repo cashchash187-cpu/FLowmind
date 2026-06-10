@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
-import { useAuthStore } from "@/lib/auth";
+import { useAuthStore, apiFetch } from "@/lib/auth";
 import { Loader2 } from "lucide-react";
 
 export function AuthGate({ children }: { children: React.ReactNode }) {
@@ -10,9 +10,30 @@ export function AuthGate({ children }: { children: React.ReactNode }) {
   // Track where we redirected so we don't loop
   const redirectedRef = useRef<string | null>(null);
 
+  // Boot-time session validation. The persisted Zustand state can outlive
+  // the 7-day JWT — without this check a returning user looks "logged in"
+  // while every API call 401s ("failed to start session"). One /auth/me
+  // round-trip settles it: 401 clears the stale state (and the redirect
+  // effect below sends them to /login); network errors leave the state
+  // alone so offline users aren't logged out spuriously.
   useEffect(() => {
-    const t = setTimeout(() => setSettled(true), 0);
-    return () => clearTimeout(t);
+    const stored = useAuthStore.getState();
+    if (!stored.token && !stored.user) {
+      setSettled(true);
+      return;
+    }
+    let cancelled = false;
+    apiFetch("/api/auth/me")
+      .then((res) => {
+        // apiFetch already broadcasts fm:unauthorized on 401, which clears
+        // the store — nothing else to do here.
+        if (!cancelled && res.status === 401) {
+          useAuthStore.getState().clearAuth();
+        }
+      })
+      .catch(() => { /* network hiccup — keep local state */ })
+      .finally(() => { if (!cancelled) setSettled(true); });
+    return () => { cancelled = true; };
   }, []);
 
   useEffect(() => {
