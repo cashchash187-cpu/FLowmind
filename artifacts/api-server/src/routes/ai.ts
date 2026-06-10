@@ -115,6 +115,34 @@ async function getOwnedSession(sessionId: number, userId: number, isAdmin: boole
 
 const LANGUAGE_RULE = `Respond in the exact same language as the conversation. If the conversation is in German, respond in German. If in English, respond in English. Never switch languages.`;
 
+/**
+ * Cheap stopword-based language detection for the transcript. The generic
+ * "respond in the same language" rule at the END of a long prompt was too
+ * weak for Gemini Flash-Lite — explain/logic_check kept answering German
+ * conversations in English. Detecting the language server-side and pinning
+ * it as the FIRST system line + a trailing user instruction fixes it.
+ */
+function detectLanguage(text: string): { code: string; name: string } | null {
+  const sample = text.toLowerCase().slice(-2000);
+  const count = (words: string[]) =>
+    words.reduce((acc, w) => acc + (sample.match(new RegExp(`\\b${w}\\b`, "g"))?.length ?? 0), 0);
+  const de = count(["und", "der", "die", "das", "ist", "nicht", "ich", "wir", "für", "mit", "auch", "eine", "haben", "sind", "wie", "noch", "aber", "wird"]);
+  const en = count(["the", "and", "is", "of", "to", "that", "what", "have", "with", "for", "this", "are", "was", "not", "you", "but"]);
+  const fr = count(["le", "la", "les", "et", "est", "que", "pour", "dans", "nous", "vous", "avec", "pas", "une", "sont"]);
+  const es = count(["el", "la", "los", "las", "es", "que", "para", "con", "una", "pero", "como", "este", "más", "tiene"]);
+  const scores: Array<[number, string, string]> = [
+    [de, "de", "German (Deutsch)"],
+    [en, "en", "English"],
+    [fr, "fr", "French (Français)"],
+    [es, "es", "Spanish (Español)"],
+  ];
+  scores.sort((a, b) => b[0] - a[0]);
+  const [top, second] = scores;
+  // Require a clear winner — ambiguous text falls back to the generic rule.
+  if (top[0] < 3 || top[0] < second[0] * 1.5) return null;
+  return { code: top[1], name: top[2] };
+}
+
 const CONTEXT_RULE = `You receive the FULL recent transcript, not just the last sentence. When the latest question references something the speakers discussed earlier (a company, a number, a decision, a name) you MUST scan the whole excerpt and pull that thread back in. Don't reduce your answer to whatever the very last words were.`;
 
 const COMPLETENESS_RULE = `Always deliver a COMPLETE sentence. Never end with an ellipsis or a half-finished phrase. If a thought needs two sentences, write two — concise but finished.`;
@@ -161,8 +189,16 @@ router.post("/sessions/:id/ai-assist", async (req, res): Promise<void> => {
   }
 
   const { mode, context: inlineContext } = parsed.data;
-  const systemPrompt = MODE_PROMPTS[mode] ?? MODE_PROMPTS.objection;
   const context = inlineContext?.trim() ? inlineContext : await buildRollingContext(params.data.id);
+
+  // Pin the output language HARD. The trailing language rule alone was too
+  // weak — explain/logic_check answered German conversations in English.
+  const lang = detectLanguage(context);
+  const langPrefix = lang
+    ? `ABSOLUTE RULE #1: The conversation below is in ${lang.name}. Write your ENTIRE answer in ${lang.name} — every single word.\n\n`
+    : "";
+  const langSuffix = lang ? `\n\nRemember: answer in ${lang.name}.` : "";
+  const systemPrompt = langPrefix + (MODE_PROMPTS[mode] ?? MODE_PROMPTS.objection);
 
   let suggestion: string;
   try {
@@ -173,7 +209,7 @@ router.post("/sessions/:id/ai-assist", async (req, res): Promise<void> => {
         temperature: 0.5,
         messages: [
           { role: "system", content: systemPrompt },
-          { role: "user", content: `Here is the conversation so far:\n\n${context}\n\nGenerate your response now.` },
+          { role: "user", content: `Here is the conversation so far:\n\n${context}\n\nGenerate your response now.${langSuffix}` },
         ],
       }),
     );

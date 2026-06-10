@@ -1,7 +1,7 @@
 import { useState } from "react";
 import { Link, useLocation } from "wouter";
 import { ThemeProvider } from "./theme-provider";
-import { LayoutDashboard, History, Settings, CreditCard, Plus, Mic, Moon, Sun, Menu, X, ShieldCheck, LogOut, Home } from "lucide-react";
+import { LayoutDashboard, History, Settings, CreditCard, Plus, Mic, Moon, Sun, Menu, X, ShieldCheck, LogOut, Home, BrainCircuit } from "lucide-react";
 import { useTheme } from "./theme-provider";
 import { Button } from "@/components/ui/button";
 import { Sheet, SheetContent, SheetTrigger } from "@/components/ui/sheet";
@@ -49,6 +49,7 @@ function NavItems({ onNavigate }: { onNavigate?: () => void }) {
     { href: "/", label: "Home", icon: Home, testId: "link-nav-home" },
     { href: "/dashboard", label: "Dashboard", icon: LayoutDashboard, testId: "link-nav-dashboard" },
     { href: "/sessions", label: "Sessions", icon: History, testId: "link-nav-history" },
+    { href: "/brain", label: "Memory", icon: BrainCircuit, testId: "link-nav-brain" },
     { href: "/settings", label: "Settings", icon: Settings, testId: "link-nav-settings" },
     { href: "/pricing", label: "Pricing", icon: CreditCard, testId: "link-nav-pricing" },
     ...(user?.isAdmin ? [{ href: "/admin", label: "Admin", icon: ShieldCheck, testId: "link-nav-admin" }] : []),

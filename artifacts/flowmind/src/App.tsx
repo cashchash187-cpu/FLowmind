@@ -17,6 +17,7 @@ import NewSession from "@/pages/new-session";
 import SessionLive from "@/pages/session";
 import SessionNotes from "@/pages/session-notes";
 import HistoryPage from "@/pages/history";
+import BrainPage from "@/pages/brain";
 import PricingPage from "@/pages/pricing";
 import SettingsPage from "@/pages/settings";
 import AdminPage from "@/pages/admin";
@@ -88,6 +89,7 @@ function AppRouter() {
                   <Route path="/session/:id/notes" component={SessionNotes} />
                   <Route path="/session/:id" component={SessionLive} />
                   <Route path="/sessions" component={HistoryPage} />
+                  <Route path="/brain" component={BrainPage} />
                   {/* Keep the old /history URL working for any existing bookmarks. */}
                   <Route path="/history" component={HistoryPage} />
                   <Route path="/pricing" component={PricingPage} />

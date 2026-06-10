@@ -6,3 +6,4 @@ export * from "./usage";
 export * from "./users";
 export * from "./auth";
 export * from "./research";
+export * from "./memos";
