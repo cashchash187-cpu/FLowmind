@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
 import { apiFetch } from "@/lib/auth";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
+import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -20,6 +21,8 @@ import {
   X,
   BellRing,
   Sparkles,
+  Search,
+  CornerDownLeft,
 } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 
@@ -28,6 +31,8 @@ import { useToast } from "@/hooks/use-toast";
 interface PageMeta { id: number; folder: string; title: string; updatedAt: string }
 interface PageFull extends PageMeta { content: string; createdAt: string }
 interface Reminder { id: number; label: string; dueAt: string; done: boolean }
+interface AskSource { kind: "page" | "meeting"; id: number; label: string; snippet: string }
+interface AskAnswer { answer: string; sources: AskSource[]; usedSources: number }
 interface MemoResult {
   memoId: number;
   page: { id: number; folder: string; title: string };
@@ -96,6 +101,22 @@ export default function BrainPage() {
   const [draft, setDraft] = useState("");
   const [dictating, setDictating] = useState(false);
   const [lastResult, setLastResult] = useState<MemoResult | null>(null);
+
+  // Ask-your-Memory state
+  const [question, setQuestion] = useState("");
+  const [answer, setAnswer] = useState<AskAnswer | null>(null);
+  const askMemory = useMutation({
+    mutationFn: async (q: string) => {
+      const res = await apiFetch("/api/brain/ask", { method: "POST", body: JSON.stringify({ question: q }) });
+      if (!res.ok) {
+        const data = await res.json().catch(() => ({})) as { message?: string };
+        throw new Error(data.message ?? `Fehler ${res.status}`);
+      }
+      return res.json() as Promise<AskAnswer>;
+    },
+    onSuccess: (a) => setAnswer(a),
+    onError: (err: Error) => toast({ title: "Frage fehlgeschlagen", description: err.message, variant: "destructive" }),
+  });
   const recRef = useRef<InstanceType<SpeechRecognitionCtor> | null>(null);
   const baseTextRef = useRef("");
 
@@ -248,6 +269,59 @@ export default function BrainPage() {
             Sprich oder tippe eine Notiz — die KI sortiert sie automatisch ein und hält alles aktuell.
           </p>
         </div>
+      </div>
+
+      {/* Ask your Memory */}
+      <div className="rounded-2xl border border-primary/25 bg-gradient-to-br from-primary/5 to-transparent p-4 space-y-3">
+        <form
+          onSubmit={(e) => { e.preventDefault(); if (question.trim()) askMemory.mutate(question.trim()); }}
+          className="flex items-center gap-2"
+        >
+          <div className="relative flex-1">
+            <Search className="absolute left-3 top-1/2 -translate-y-1/2 h-4 w-4 text-muted-foreground/50" />
+            <Input
+              value={question}
+              onChange={(e) => setQuestion(e.target.value)}
+              placeholder="Frag dein Gedächtnis… z.B. „Was war mit Müller GmbH und dem Angebot?“"
+              className="h-11 pl-9 pr-3 text-sm bg-background/70"
+              data-testid="ask-input"
+            />
+          </div>
+          <Button
+            type="submit"
+            className="h-11 px-4 gap-1.5 rounded-xl font-semibold flex-none"
+            disabled={!question.trim() || askMemory.isPending}
+            data-testid="ask-submit"
+          >
+            {askMemory.isPending ? <Loader2 className="h-4 w-4 animate-spin" /> : <CornerDownLeft className="h-4 w-4" />}
+            <span className="hidden sm:inline">Fragen</span>
+          </Button>
+        </form>
+
+        {answer && !askMemory.isPending && (
+          <div className="rounded-xl border border-border/50 bg-background/60 p-3.5 space-y-2" data-testid="ask-answer">
+            <div className="flex items-start gap-2">
+              <Sparkles className="h-4 w-4 text-primary flex-none mt-0.5" />
+              <p className="text-sm leading-relaxed whitespace-pre-wrap">{answer.answer}</p>
+            </div>
+            {answer.sources.length > 0 && (
+              <div className="flex flex-wrap gap-1.5 pt-1 pl-6">
+                {answer.sources.map((s) => (
+                  <button
+                    key={`${s.kind}-${s.id}`}
+                    type="button"
+                    onClick={() => { if (s.kind === "page") { setOpenPageId(s.id); setEditing(false); } else { window.location.href = `/session/${s.id}/notes`; } }}
+                    className="inline-flex items-center gap-1 px-2 py-0.5 rounded-md text-[10px] font-mono bg-muted/60 hover:bg-muted text-muted-foreground hover:text-foreground transition-colors"
+                    title={s.snippet}
+                  >
+                    {s.kind === "page" ? <FileText className="h-2.5 w-2.5" /> : <Mic className="h-2.5 w-2.5" />}
+                    {s.label}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Capture card */}

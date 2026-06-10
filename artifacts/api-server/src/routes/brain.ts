@@ -2,6 +2,7 @@ import { Router, type IRouter } from "express";
 import { eq, and, desc, asc, gte } from "drizzle-orm";
 import { db, memosTable, memoPagesTable, remindersTable } from "@workspace/db";
 import { processMemo } from "../lib/memo-agent";
+import { answerFromMemory } from "../lib/memory-search";
 import { llmConfigured } from "@workspace/integrations-openai-ai-server";
 
 const router: IRouter = Router();
@@ -46,6 +47,32 @@ router.get("/memos/recent", async (req, res): Promise<void> => {
     .orderBy(desc(memosTable.createdAt))
     .limit(20);
   res.json(rows);
+});
+
+// ── Ask your Memory ──────────────────────────────────────────────────────────
+
+// POST /api/brain/ask — natural-language Q&A across pages + meetings.
+router.post("/brain/ask", async (req, res): Promise<void> => {
+  const { question } = (req.body ?? {}) as { question?: string };
+  if (!question || typeof question !== "string" || !question.trim()) {
+    res.status(400).json({ error: "question required" });
+    return;
+  }
+  if (question.length > 1000) {
+    res.status(400).json({ error: "question too long" });
+    return;
+  }
+  if (!llmConfigured) {
+    res.status(503).json({ error: "ai_not_configured" });
+    return;
+  }
+  try {
+    const result = await answerFromMemory(req.user!.id, question.trim());
+    res.json(result);
+  } catch (err) {
+    req.log.error({ err }, "[BRAIN] ask failed");
+    res.status(502).json({ error: "ask_failed", message: "Konnte die Frage gerade nicht beantworten. Versuch es nochmal." });
+  }
 });
 
 // ── Pages ────────────────────────────────────────────────────────────────────
