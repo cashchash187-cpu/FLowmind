@@ -34,28 +34,47 @@ interface Candidate {
   kind: "page" | "meeting";
   id: number;
   label: string;
+  title: string; // scored at 3× weight
   text: string;
   recency: number; // epoch ms, for tie-breaking
 }
 
+// Expanded stopword list — the first version was too thin, so filler words
+// like "habe" let long meeting transcripts dominate retrieval and buried
+// the actually-relevant note pages. Covers the common DE+EN function words.
 const STOPWORDS = new Set([
-  "der", "die", "das", "und", "ist", "ein", "eine", "von", "mit", "für", "auf", "den", "dem", "im", "was", "wer", "wie", "wo", "wann", "warum",
+  // German
+  "der", "die", "das", "und", "ist", "ein", "eine", "einen", "einem", "einer", "von", "mit", "für", "auf", "den", "dem", "des", "im", "in",
+  "was", "wer", "wie", "wo", "wann", "warum", "wieso", "welche", "welcher", "welches", "ich", "du", "er", "sie", "es", "wir", "ihr",
+  "mir", "mich", "dir", "dich", "uns", "euch", "habe", "hast", "hat", "haben", "hatte", "hatten", "bin", "bist", "sind", "war", "waren",
+  "werde", "wird", "werden", "wurde", "wurden", "kann", "kannst", "können", "soll", "sollen", "muss", "müssen", "noch", "schon", "auch",
+  "aber", "oder", "wenn", "dann", "weil", "dass", "als", "an", "am", "zu", "zum", "zur", "bei", "nach", "über", "unter", "vor", "nur",
+  "sich", "sein", "seine", "ihre", "mein", "meine", "dein", "deine", "nicht", "kein", "keine", "mal", "etwas", "gibt", "geht", "habt",
+  // English
   "the", "and", "is", "a", "an", "of", "to", "for", "on", "in", "what", "who", "how", "where", "when", "why", "was", "were", "about",
+  "have", "has", "had", "are", "be", "been", "do", "does", "did", "can", "could", "should", "would", "with", "that", "this", "these",
+  "i", "you", "he", "she", "it", "we", "they", "my", "your", "me", "us", "at", "by", "or", "if", "then", "not", "no", "some", "any",
 ]);
 
 function tokens(s: string): string[] {
   return s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, " ").split(/\s+/).filter((w) => w.length >= 3 && !STOPWORDS.has(w));
 }
 
-function scoreOverlap(queryTokens: Set<string>, text: string): number {
-  const t = tokens(text);
-  if (t.length === 0) return 0;
-  let hits = 0;
-  const seen = new Set<string>();
-  for (const w of t) {
-    if (queryTokens.has(w) && !seen.has(w)) { hits++; seen.add(w); }
+/** Score a candidate against the query. Title overlap is weighted 3× — a
+ *  page literally named "Geburtstage" should win a "welche Geburtstage"
+ *  query over a meeting that merely happens to share filler words. */
+function scoreOverlap(queryTokens: Set<string>, bodyText: string, titleText: string): number {
+  const seenBody = new Set<string>();
+  let bodyHits = 0;
+  for (const w of tokens(bodyText)) {
+    if (queryTokens.has(w) && !seenBody.has(w)) { bodyHits++; seenBody.add(w); }
   }
-  return hits;
+  const seenTitle = new Set<string>();
+  let titleHits = 0;
+  for (const w of tokens(titleText)) {
+    if (queryTokens.has(w) && !seenTitle.has(w)) { titleHits++; seenTitle.add(w); }
+  }
+  return bodyHits + titleHits * 3;
 }
 
 export async function answerFromMemory(userId: number, question: string): Promise<MemoryAnswer> {
@@ -80,6 +99,7 @@ export async function answerFromMemory(userId: number, question: string): Promis
       kind: "page",
       id: p.id,
       label: `${p.folder} / ${p.title}`,
+      title: `${p.folder} ${p.title}`,
       text: `${p.title}\n${p.content}`,
       recency: new Date(p.updatedAt).getTime(),
     });
@@ -96,6 +116,7 @@ export async function answerFromMemory(userId: number, question: string): Promis
       kind: "meeting",
       id: s.id,
       label: s.title,
+      title: s.title,
       text: `${s.title}\n` + rows.map((r) => `${r.speakerLabel}: ${r.text}`).join("\n"),
       recency: s.createdAt ? new Date(s.createdAt).getTime() : 0,
     });
@@ -108,7 +129,7 @@ export async function answerFromMemory(userId: number, question: string): Promis
   // Rank by keyword overlap, recency as tie-break.
   const qTokens = new Set(tokens(q));
   const ranked = candidates
-    .map((c) => ({ c, score: scoreOverlap(qTokens, c.text) }))
+    .map((c) => ({ c, score: scoreOverlap(qTokens, c.text, c.title) }))
     .sort((a, b) => (b.score - a.score) || (b.c.recency - a.c.recency));
 
   // Keep sources with any overlap; if NOTHING overlaps (vague question),
