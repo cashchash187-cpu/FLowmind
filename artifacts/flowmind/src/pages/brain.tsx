@@ -356,6 +356,28 @@ export default function BrainPage() {
           </Button>
         </div>
 
+        {/* First-run example chips — only when nothing captured yet + field
+            empty, to drive the very first memo. */}
+        {pages.length === 0 && !draft.trim() && !lastResult && (
+          <div className="flex flex-wrap gap-1.5">
+            {[
+              "Erinnere mich Freitag an den Anruf mit Kevin",
+              "Annas Geburtstag ist am 3. September",
+              "Projekt Müller: Angebot bis 20. Juni abgeben",
+              "Buchtipp von Lisa: Thinking Fast and Slow",
+            ].map((ex) => (
+              <button
+                key={ex}
+                type="button"
+                onClick={() => setDraft(ex)}
+                className="text-xs px-2.5 py-1.5 rounded-lg border border-border/60 bg-muted/30 text-muted-foreground hover:border-primary/40 hover:text-foreground transition-colors"
+              >
+                {ex}
+              </button>
+            ))}
+          </div>
+        )}
+
         {/* Last filing result */}
         {lastResult && !submitMemo.isPending && (
           <button

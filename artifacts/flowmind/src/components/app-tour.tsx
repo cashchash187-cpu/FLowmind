@@ -52,6 +52,14 @@ const TOUR_STEPS = [
     },
   },
   {
+    element: "[data-testid='link-nav-brain']",
+    popover: {
+      title: "🧠 Memory — dein zweites Gehirn",
+      description: "Das Feature, das FlowMind einzigartig macht. Sprich Notizen ein (\"erinnere mich Freitag an Kevin\") — die KI sortiert sie automatisch in Ordner & Seiten. <strong>Jedes Meeting landet hier automatisch.</strong> Frag dein Gedächtnis alles, und es füttert dein nächstes Gespräch.",
+      side: "right" as const,
+    },
+  },
+  {
     element: "[data-testid='link-nav-settings']",
     popover: {
       title: "⚙️ Settings",
