@@ -4,7 +4,7 @@ import { motion, useReducedMotion, AnimatePresence } from "framer-motion";
 import {
   Mic, Sparkles, ArrowRight, Clock, Play, Compass,
   ChevronRight, BarChart3, Lightbulb, TrendingUp, AlertTriangle,
-  HelpCircle, Search,
+  HelpCircle, Search, BrainCircuit,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -346,7 +346,7 @@ export default function WelcomePage() {
           <p className="text-lg md:text-xl text-muted-foreground max-w-xl leading-relaxed">
             {hasHistory
               ? "Ready for your next session?"
-              : "Your AI conversation copilot. Listen to any meeting or call and get real-time strategic help."}
+              : "Live-Hilfe in jedem Meeting — und das einzige Tool mit einem Gedächtnis, das mitdenkt: Jedes Gespräch landet automatisch in deinem zweiten Gehirn und füttert dein nächstes."}
           </p>
 
           {/* CTAs — pointer-events-auto + z-10 to sit on top of everything */}
@@ -457,18 +457,23 @@ export default function WelcomePage() {
           transition={{ duration: 0.4, delay: 0.2 }}
           className="space-y-4"
         >
-          <div className="grid sm:grid-cols-2 gap-4 max-w-2xl">
+          <div className="grid sm:grid-cols-3 gap-4 max-w-3xl">
             {[
               {
                 icon: Mic,
                 title: "Live Copilot",
-                desc: "Real-time transcription with instant AI responses for objections, answers, and logic checks.",
+                desc: "Echtzeit-Transkription mit sofortiger KI-Hilfe für Einwände, Antworten und Logik-Checks.",
               },
               {
                 icon: Compass,
                 title: "Insight Mode",
-                desc: "AI surfaces live strategic insights — opportunities, risks, connections, questions — as you talk.",
+                desc: "Die KI liefert live strategische Insights — Chancen, Risiken, Fragen — während du sprichst.",
                 pro: true,
+              },
+              {
+                icon: BrainCircuit,
+                title: "Memory",
+                desc: "Jedes Meeting landet automatisch in deinem zweiten Gehirn. Frag es alles — und es füttert dein nächstes Gespräch.",
               },
             ].map((f) => (
               <Card key={f.title} className="border-border/40 bg-muted/30 hover:border-primary/20 transition-colors">

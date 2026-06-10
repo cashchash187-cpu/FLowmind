@@ -3,6 +3,8 @@ import { eq, and, desc, asc, gte } from "drizzle-orm";
 import { db, memosTable, memoPagesTable, remindersTable, sessionsTable } from "@workspace/db";
 import { processMemo } from "../lib/memo-agent";
 import { answerFromMemory, relevantPagesForTopic } from "../lib/memory-search";
+import { getPlanLimits } from "../lib/plans";
+import { count } from "drizzle-orm";
 import { llmConfigured } from "@workspace/integrations-openai-ai-server";
 
 const router: IRouter = Router();
@@ -26,6 +28,25 @@ router.post("/memos", async (req, res): Promise<void> => {
   if (!llmConfigured) {
     res.status(503).json({ error: "ai_not_configured", message: "Memory requires the AI to be configured." });
     return;
+  }
+
+  // Free-plan memo cap. Meeting-distilled items (source="meeting") are NOT
+  // gated — those should keep flowing so the user SEES the value pile up and
+  // upgrades; only manual capture is limited.
+  if (source !== "meeting" && !user.isAdmin && user.plan !== "admin" && user.plan !== "pro" && user.plan !== "business") {
+    const limit = getPlanLimits(user.plan).memoLimit;
+    if (limit !== Infinity) {
+      const [{ value }] = await db.select({ value: count() }).from(memosTable).where(eq(memosTable.userId, user.id));
+      if (Number(value) >= limit) {
+        res.status(402).json({
+          error: "upgrade_required",
+          limitType: "memo",
+          message: `Free-Plan: ${limit} Notizen erreicht. Upgrade auf Pro für unbegrenztes Memory.`,
+          upgradeUrl: "/pricing",
+        });
+        return;
+      }
+    }
   }
 
   try {
